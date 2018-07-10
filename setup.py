@@ -5,7 +5,7 @@ NAME = "diskr.space"
 DESCRIPTION = "A disk space management tool"
 AUTHOR = "raptor"
 AUTHOR_EMAIL = "raptor.zh@gmail.com"
-URL = "http://raptorz.github.com/"
+URL = "http://diskr.space/"
 VERSION = __import__(PACKAGE).__version__
 REQUIRES = ['bottle', 'sqlalchemy', 'mako', 'beaker', 'bottle-sqlalchemy']
 
