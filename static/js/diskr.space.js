@@ -177,7 +177,7 @@ $$(function () {
     $$("#scan_now").on("click", function () {
         if ($$("#scan_progress")[0].clientHeight == 0) {
             $$("#scan_progress").show();
-            update_progress();
+            setTimeout(update_progress, 5000);
             $$.ajax({
                 method: "POST",
                 url: "scan",

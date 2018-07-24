@@ -51,7 +51,7 @@ def get_status(db):
 
 @app.post("/scan")
 def post_scan(db):
-    msg = scan.reset_scanner(db)
+    msg = scan.reset_scanner()
     if msg is None:
         msg = scan.spawn_scanner(config['work_dir'])
     return {"message": msg}
@@ -59,10 +59,10 @@ def post_scan(db):
 
 @app.get("/scan/progress")
 def get_scan_progress(db):
-    msg = scan.reset_scanner(db)
+    msg = scan.reset_scanner()
     if msg is None:
         scan.set_progress(100, "", 0)
-    return web.get_progress(db)
+    return web.get_progress()
 
 
 @app.get("/search")
@@ -82,11 +82,20 @@ def get_duplicated(db, page='0'):
 def delete_duplicated(db, id):
     name = web.remove_dup(db, id)
     if not name:
+        logger.warning("Invalid id: {}".format(id))
         return {"status": "invalid_id"}
     name = os.path.join(os.path.expanduser(config["work_dir"]), name)
+    logger.info("deleting file: {}".format(name))
     if not config["debug"]:
         logger.warning(name)
-        shutil.rmtree(name, ignore_errors=True)
+        if os.path.isdir(name):
+            try:
+                shutil.rmtree(name)  # , ignore_errors=True)
+            except Exception as e:
+                logger.error(str(e))
+                return {"status": "rmtree_fail"}
+        else:
+            os.unlink(name)
     return {"status": "ok"}
 
 

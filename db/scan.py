@@ -12,8 +12,7 @@ import hashlib
 import os
 import logging
 
-from cProfile import Profile
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 
 from config import reload_config
 from db.common import expand_size
@@ -36,12 +35,11 @@ def set_progress(progress, cur_path, speed):
         "speed": str(int(speed)) if speed is not None else None,
     }
     with DBSession() as db:
-        rs = db.orm.query(SysInfo).all()
+        rs = db.orm.query(SysInfo).filter(SysInfo.name.in_(info.keys())).all()
         for item in rs:
-            if item.name in info.keys():
-                value = info.pop(item.name)
-                if value is not None:
-                    item.value = value
+            value = info.pop(item.name)
+            if value is not None:
+                item.value = value
         if info:
             for k, v in info.items():
                 if v is not None:
@@ -102,29 +100,25 @@ def get_filemd5(fn):
         return "-"
 
 
-def add_file(pid, ftype, dirname, name, size, ftime, tags, **kwargs):
+def add_file(orm, filerec, pid, ftype, dirname, name, size, ftime, tags, **kwargs):
     if not ftime:
         return None
-    with DBSession() as db:
-        orm = db.orm
-        r = orm.query(FileInfo).filter(FileInfo.dirname == dirname,
-                                       FileInfo.name == name).first()
-        if r:
-            r.ftype = ftype
-            r.size = size
-            r.ftime = ftime
-            r.checksum = None
-            r.quickhash = None
-            r.pid = pid
-            update_tags(orm, r.id, tags)
-        else:
-            r = FileInfo(ftype=ftype, name=name, dirname=dirname,
-                         size=size, ftime=ftime, pid=pid)
-            orm.add(r)
-            orm.flush()
-            orm.refresh(r)
-            add_tags(orm, r.id, tags)
-        return r.id
+    if filerec:
+        filerec.ftype = ftype
+        filerec.size = size
+        filerec.ftime = ftime
+        filerec.checksum = None
+        filerec.quickhash = None
+        filerec.pid = pid
+        update_tags(orm, filerec.id, tags)
+    else:
+        filerec = FileInfo(ftype=ftype, name=name, dirname=dirname,
+                           size=size, ftime=ftime, pid=pid)
+        orm.add(filerec)
+        orm.flush()
+        orm.refresh(filerec)
+        add_tags(orm, filerec.id, tags)
+    return filerec.id
 
 
 def clean_notexists():
@@ -141,46 +135,46 @@ def clean_notexists():
                 delete_tags(db.orm, r.id)
                 db.orm.delete(r)
 
-
 def gen_checksum():
     root = os.path.expanduser(config['work_dir'])
     quickhash = expand_size(config['quick_hash_size'])
     with DBSession() as db:
         sq = db.orm.query(FileInfo.size).filter(FileInfo.ftype=='F', FileInfo.size>0).group_by(
             FileInfo.size).having(func.count(FileInfo.size) > 1).subquery()
-        rs = [{"id": r.id, "realname": os.path.realpath(os.path.join(root, r.dirname, r.name))
-               } for r in db.orm.query(FileInfo).join(sq, FileInfo.size == sq.c.size).filter(FileInfo.pid!=None).filter(
-            or_(FileInfo.checksum==None, FileInfo.quickhash!=quickhash)).all()]
-    for r in rs:
-        checksum = get_filemd5(r['realname'])
+        qry = db.orm.query(FileInfo).join(sq, FileInfo.size == sq.c.size).filter(FileInfo.pid!=None).filter(
+            or_(FileInfo.checksum==None, and_(FileInfo.quickhash!=0, FileInfo.quickhash!=quickhash)))
+        rs = [{"id": r.id, "realname": os.path.realpath(os.path.join(root, r.dirname, r.name)),
+               "checksum": r.checksum} for r in qry.all()]
+    cs = None
+    for rec in rs:
+        if not cs and rec['checksum']:
+            cs = rec['checksum']
+        checksum = get_filemd5(rec['realname'])
         with DBSession() as db:
-            r = get_file(db.orm, r['id'])
+            r = get_file(db.orm, rec['id'])
             if checksum == '-':
                 db.orm.delete(r)
             else:
                 r.checksum = checksum
                 r.quickhash = quickhash if r.size > quickhash else 0
+    return len(rs)
 
 
-def update_dirinfo():
-    def gen_dirinfo(orm, dirname):
-        rs = orm.query(FileInfo).filter(FileInfo.dirname==dirname).all()
-        dirsize = 0
-        m = hashlib.md5()
-        for r in rs:
-            if r.ftype == 'D':
-                r.size, r.checksum = gen_dirinfo(orm, os.path.join(dirname, r.name))
-                r.quickhash = 0
-            if m and r.size > 0:
-                if r.checksum:
-                    m.update(bytes(r.checksum, "ascii"))
-                else:
-                    m = None
-            dirsize += r.size
-        return dirsize, m.hexdigest() if m and dirsize > 0 else None
-
-    with DBSession(auto_commit=True) as db:
-        gen_dirinfo(db.orm, "")
+def update_dirinfo(orm, dirname):
+    rs = orm.query(FileInfo).filter(FileInfo.dirname==dirname).all()
+    dirsize = 0
+    m = hashlib.md5()
+    for r in rs:
+        if r.ftype == 'D':
+            r.size, r.checksum = update_dirinfo(orm, os.path.join(dirname, r.name))
+            r.quickhash = 0
+        if m and r.size > 0:
+            if r.checksum:
+                m.update(bytes(r.checksum, "ascii"))
+            else:
+                m = None
+        dirsize += r.size
+    return dirsize, m.hexdigest() if m and dirsize > 0 else None
 
 
 def clean_scanner(pid):
@@ -221,58 +215,75 @@ def get_elapsed(timer):
     return elapsed + 1
 
 
-class ScanProgress:
-    def __init__(self):
-        self.count = 0
-        self.dirs = []
-        self.dircnt = 0
-        self.dircur = ""
+class ScanBatch:
+    def __init__(self, pid, force=False):
+        self.pid = pid
+        self.force = force
+        self.batch = []
         self.timer = datetime.now()
+        self.dirs = []
+        self.subdirs = {}
+        self.donedirs = []
 
-    def set_dirs_once(self, dirs):
-        if not self.dirs:
+    def init_dirs(self, root, rdir, dirs, linkpath=None):
+        # if linkpath, root is realpath
+        if not self.dirs and rdir == root:
             self.dirs = dirs
-            self.dirs.append("")
-            self.dircnt = len(self.dirs)
-
-    def update_progress(self, root, rdir, linkpath=None):
-        relname = os.path.relpath(rdir, root)
-        if relname == '.':
-            relname = ''
-            cur = ''
         else:
-            dirs = relname.split(os.path.sep)
-            cur = dirs[1] if dirs[0]=='' else dirs[0]
-        if cur != self.dircur:
-            try:
-                self.dirs.remove(self.dircur)
-            except ValueError:
-                pass
-            self.dircur = cur
-            if linkpath:
-                relname = os.path.join(linkpath, relname)
-            return relname
-        return None
+            dir = os.path.relpath(rdir, root)
+            ds = dir.split(os.path.sep)
+            if len(ds) > 1:
+                dir = None
+            if len(self.subdirs.keys()) < len(self.dirs):
+                if linkpath:
+                    ds = linkpath.split(os.path.sep)
+                    if len(ds) == 1:
+                        dir = linkpath
+                    else:
+                        dir = None
+                if dir and dir in self.dirs and dir not in self.subdirs.keys():
+                    self.subdirs[dir] = dirs
+            if dir is None:
+                if len(ds) == 1:
+                    dir = ds[0]
+                else:
+                    dir = os.path.join(ds[0], ds[1])
+                if dir not in self.donedirs:
+                    self.donedirs.append(dir)
 
     def get_progress(self):
-        return int((self.dircnt - len(self.dirs)) * 90 / self.dircnt)
+        count = 0
+        for k, v in self.subdirs.items():
+            count += len(v)
+        return len(self.donedirs) * 90 / (len(self.dirs) + count + 1)
 
-    def step(self, count):
-        self.count += count
+    def save_batch(self):
+        count = len(self.batch)
+        with DBSession() as db:
+            for fileinfo in self.batch:
+                filerec = db.orm.query(FileInfo).filter(FileInfo.dirname==fileinfo['dirname'],
+                                                        FileInfo.name==fileinfo['name']).first()
+                if self.force or not filerec:
+                    add_file(db.orm, filerec, pid=self.pid, **fileinfo)
+        self.batch = []
+        return gen_checksum() + count
 
-    def get_speed(self):
-        return self.count / ((datetime.now() - self.timer).seconds + 1)
+    def add_file(self, fileinfo):
+        self.batch.append(fileinfo)
+        if len(self.batch) >= 1024:
+            count = self.save_batch()
+            set_progress(self.get_progress(),
+                         os.path.join(fileinfo['dirname'], fileinfo['name']),
+                         count / get_elapsed(self.timer))
+            self.timer = datetime.now()
 
 
-def scan_dir(pid, root, force=False, linkpath=None):
-    prog = ScanProgress()
-    with DBSession(auto_commit=True) as db:
+def scan_dir(pid, root, force=False, linkpath=None, batch=None):
+    if not batch:
+        batch = ScanBatch(pid, force)
+    try:
         for rdir, dirs, files in os.walk(root):
-            prog.set_dirs_once(dirs)
-            relname = prog.update_progress(root, rdir, linkpath)
-            if relname is not None or prog.count % 100 == 0:
-                gen_checksum()
-                set_progress(prog.get_progress(), relname, prog.get_speed())
+            batch.init_dirs(root, rdir, dirs, linkpath)
             if os.path.islink(rdir):
                 logger.warning("link to: %s" % rdir)
                 return
@@ -280,10 +291,8 @@ def scan_dir(pid, root, force=False, linkpath=None):
                 try:
                     fileinfo = make_fileinfo(os.path.join(rdir, name), root, linkpath)
                     if fileinfo:
-                        f = db.orm.query(FileInfo.id).filter(FileInfo.dirname==fileinfo['dirname'],
-                                                             FileInfo.name==fileinfo['name']).first()
-                        if force or not f:
-                            add_file(pid=pid, ftype='F', **fileinfo)
+                        fileinfo['ftype'] = 'F'
+                        batch.add_file(fileinfo)
                 except UnicodeEncodeError:
                     logger.error("dirname: %s, name: %s" % (rdir, name))
                 except:
@@ -296,22 +305,22 @@ def scan_dir(pid, root, force=False, linkpath=None):
                     fullname = os.path.join(rdir, name)
                     fileinfo = make_fileinfo(fullname, root, linkpath)
                     if fileinfo:
-                        f = db.orm.query(FileInfo.id).filter(FileInfo.dirname==fileinfo['dirname'],
-                                                             FileInfo.name==fileinfo['name']).first()
-                        if force or not f:
-                            add_file(pid=pid, ftype='D', **fileinfo)
-                            if os.path.islink(fullname):
-                                count = scan_dir(pid, fileinfo['realname'], force,
-                                                 os.path.join(fileinfo['dirname'], fileinfo['name']))
-                                prog.step(count)
+                        fileinfo['ftype'] = 'D'
+                        batch.add_file(fileinfo)
+                        if os.path.islink(fullname):
+                            with DBSession(auto_commit=True) as db:
+                                notexists = db.orm.query(FileInfo.id).filter(FileInfo.dirname==fileinfo['dirname'],
+                                                                             FileInfo.name==fileinfo['name']).first() is None
+                            if force or notexists:
+                                scan_dir(pid, fileinfo['realname'], force,
+                                                 os.path.join(fileinfo['dirname'], fileinfo['name']), batch=batch)
                 except UnicodeEncodeError:
                     logger.error("dirname: %s, name: %s" % (rdir, name))
                 except:
                     logger.error("dirname: %s, name: %s" % (rdir, name))
                     raise
-            prog.step(1)
-    gen_checksum()
-    return prog.count
+    finally:
+        batch.save_batch()
 
 
 def get_file(orm, id):
@@ -320,33 +329,35 @@ def get_file(orm, id):
 
 def scanner(root):
     speed = 0
-    logger.info("Scanner started...")
-    prof = Profile()
-    prof.enable()
+    timer = datetime.now()
     try:
         pid = os.getpid()
-        timer = datetime.now()
-        with DBSession(auto_commit=True) as db:
-            r = db.orm.query(SysInfo).filter(SysInfo.name=="pid").first()
-            if r:
-                r.value = str(pid)
-            else:
-                db.orm.add(SysInfo(name="pid", value=str(pid)))
-            r = db.orm.query(SysInfo).filter(SysInfo.name=='last_scan').first()
-            force = False
-            if r:
-                force = (datetime.now() - datetime.strptime(r.value, "%Y-%m-%d %H:%M:%S")
-                         ).seconds > int(config['scan_interval'])
-        set_progress(1, "", speed)
-        scan_dir(pid, root, force)
-        with DBSession(auto_commit=True) as db:
-            count = db.orm.query(FileInfo.id).filter(FileInfo.pid!=None).count()
-        speed = int(count / get_elapsed(timer))
-        if force:
-            clean_notexists()
-        set_progress(90, "", speed)
-        update_dirinfo()
-        clean_scanner(pid)
+        try:
+            with DBSession(auto_commit=True) as db:
+                r = db.orm.query(SysInfo).filter(SysInfo.name=="pid").first()
+                if r:
+                    r.value = str(pid)
+                else:
+                    db.orm.add(SysInfo(name="pid", value=str(pid)))
+                r = db.orm.query(SysInfo).filter(SysInfo.name=='last_scan').first()
+                force = False
+                if r:
+                    force = (datetime.now() - datetime.strptime(r.value, "%Y-%m-%d %H:%M:%S")
+                             ).seconds > int(config['scan_interval'])
+            set_progress(1, "", speed)
+            scan_dir(pid, root, force)
+            with DBSession(auto_commit=True) as db:
+                count = db.orm.query(FileInfo.id).filter(FileInfo.pid!=None).count()
+            speed = int(count / get_elapsed(timer))
+            if force:
+                clean_notexists()
+        finally:
+            logger.info("Updating directories info...")
+            set_progress(90, "", speed)
+            with DBSession() as db:
+                total_size, _ = update_dirinfo(db.orm, "")
+                logger.info("Total size: {}".format(total_size))
+            clean_scanner(pid)
     finally:
         dt = datetime.now().strftime("%Y-%d-%m %H:%M:%S")
         with DBSession(auto_commit=True) as db:
@@ -356,24 +367,23 @@ def scanner(root):
             else:
                 db.orm.add(SysInfo(name="last_scan", value=dt))
         set_progress(100, "", speed)
-        logger.info("Scanner done")
-        prof.disable()
-        prof.dump_stats(os.path.expanduser("~/Downloads/prof.log"))
 
 
-def reset_scanner(orm):
-    r = orm.query(SysInfo).filter(SysInfo.name=="pid").first()
-    if r and check_pid(int(r.value)):
-        return "Scanner working, please wait..."
-    pids = orm.query(FileInfo.pid).filter(FileInfo.pid != None).distinct()
-    for p in pids:
-        if check_pid(p.pid):
+def reset_scanner():
+    with DBSession(auto_commit=True) as db:
+        orm = db.orm
+        r = orm.query(SysInfo).filter(SysInfo.name=="pid").first()
+        if r and check_pid(int(r.value)):
             return "Scanner working, please wait..."
-        else:
-            sql = """UPDATE fileinfo SET pid=null WHERE pid = :pid"""
-            with SQLResult(orm, sql, pid=p.pid) as res:
-                if res.rowcount <= 0:
-                    logger.error("Reset scanner {} fail!".format(p.pid))
+        pids = orm.query(FileInfo.pid).filter(FileInfo.pid != None).distinct()
+        for p in pids:
+            if check_pid(p.pid):
+                return "Scanner working, please wait..."
+            else:
+                sql = """UPDATE fileinfo SET pid=null WHERE pid = :pid"""
+                with SQLResult(orm, sql, pid=p.pid) as res:
+                    if res.rowcount <= 0:
+                        logger.error("Reset scanner {} fail!".format(p.pid))
     return None
 
 

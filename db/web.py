@@ -38,9 +38,11 @@ def get_status(orm):
     return info
 
 
-def get_progress(orm):
-    qry = orm.query(SysInfo).filter(SysInfo.name.in_(["progress", "cur_path", "speed"]))
-    return {item.name: item.value for item in qry.all()}
+def get_progress():
+    with DBSession(auto_commit=True) as db:
+        orm = db.orm
+        qry = orm.query(SysInfo).filter(SysInfo.name.in_(["progress", "cur_path", "speed"]))
+        return {item.name: item.value for item in qry.all()}
 
 
 def format_rec(r):
