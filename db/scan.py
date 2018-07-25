@@ -211,8 +211,8 @@ def make_fileinfo(fullname, root, linkpath=None):
 
 
 def get_elapsed(timer):
-    elapsed = (datetime.now() - timer).seconds
-    return elapsed + 1
+    elapsed = datetime.now() - timer
+    return elapsed.seconds + elapsed.microseconds / 1000000
 
 
 class ScanBatch:
@@ -261,10 +261,17 @@ class ScanBatch:
         count = len(self.batch)
         with DBSession() as db:
             for fileinfo in self.batch:
-                filerec = db.orm.query(FileInfo).filter(FileInfo.dirname==fileinfo['dirname'],
-                                                        FileInfo.name==fileinfo['name']).first()
-                if self.force or not filerec:
-                    add_file(db.orm, filerec, pid=self.pid, **fileinfo)
+                try:
+                    _ = str(fileinfo['name']).encode('utf-8')  # test encoding
+                    filerec = db.orm.query(FileInfo).filter(FileInfo.dirname==fileinfo['dirname'],
+                                                            FileInfo.name==fileinfo['name']).first()
+                    if self.force or not filerec:
+                        add_file(db.orm, filerec, pid=self.pid, **fileinfo)
+                except UnicodeEncodeError:
+                    logger.error("Unicode error: {dirname}/{name}".format(**fileinfo))
+                except Exception as e:
+                    logger.error("Error : {dirname}/{name} {error}".format(error=str(e), **fileinfo))
+                    break
         self.batch = []
         return gen_checksum() + count
 
@@ -272,6 +279,7 @@ class ScanBatch:
         self.batch.append(fileinfo)
         if len(self.batch) >= 1024:
             count = self.save_batch()
+            logger.info("Checksum count: {}".format(count - 1024))
             set_progress(self.get_progress(),
                          os.path.join(fileinfo['dirname'], fileinfo['name']),
                          count / get_elapsed(self.timer))
@@ -288,37 +296,27 @@ def scan_dir(pid, root, force=False, linkpath=None, batch=None):
                 logger.warning("link to: %s" % rdir)
                 return
             for name in files:
-                try:
-                    fileinfo = make_fileinfo(os.path.join(rdir, name), root, linkpath)
-                    if fileinfo:
-                        fileinfo['ftype'] = 'F'
-                        batch.add_file(fileinfo)
-                except UnicodeEncodeError:
-                    logger.error("dirname: %s, name: %s" % (rdir, name))
-                except:
-                    logger.error("dirname: %s, name: %s" % (rdir, name))
-                    raise
+                fileinfo = make_fileinfo(os.path.join(rdir, name), root, linkpath)
+                if fileinfo:
+                    fileinfo['ftype'] = 'F'
+                    batch.add_file(fileinfo)
             for name in dirs:
                 if name == '':
                     continue
-                try:
-                    fullname = os.path.join(rdir, name)
-                    fileinfo = make_fileinfo(fullname, root, linkpath)
-                    if fileinfo:
-                        fileinfo['ftype'] = 'D'
-                        batch.add_file(fileinfo)
-                        if os.path.islink(fullname):
-                            with DBSession(auto_commit=True) as db:
-                                notexists = db.orm.query(FileInfo.id).filter(FileInfo.dirname==fileinfo['dirname'],
-                                                                             FileInfo.name==fileinfo['name']).first() is None
-                            if force or notexists:
-                                scan_dir(pid, fileinfo['realname'], force,
-                                                 os.path.join(fileinfo['dirname'], fileinfo['name']), batch=batch)
-                except UnicodeEncodeError:
-                    logger.error("dirname: %s, name: %s" % (rdir, name))
-                except:
-                    logger.error("dirname: %s, name: %s" % (rdir, name))
-                    raise
+                fullname = os.path.join(rdir, name)
+                fileinfo = make_fileinfo(fullname, root, linkpath)
+                if fileinfo is None:
+                    continue
+                fileinfo['ftype'] = 'D'
+                batch.add_file(fileinfo)
+                if not os.path.islink(fullname):
+                    continue
+                with DBSession(auto_commit=True) as db:
+                    notexists = db.orm.query(FileInfo.id).filter(FileInfo.dirname==fileinfo['dirname'],
+                                                                 FileInfo.name==fileinfo['name']).first() is None
+                if force or notexists:
+                    scan_dir(pid, fileinfo['realname'], force,
+                                     os.path.join(fileinfo['dirname'], fileinfo['name']), batch=batch)
     finally:
         batch.save_batch()
 
@@ -353,10 +351,12 @@ def scanner(root):
                 clean_notexists()
         finally:
             logger.info("Updating directories info...")
+            timer = datetime.now()
             set_progress(90, "", speed)
             with DBSession() as db:
                 total_size, _ = update_dirinfo(db.orm, "")
                 logger.info("Total size: {}".format(total_size))
+            logger.info("Elapsed time: {}".format((datetime.now() - timer).seconds))
             clean_scanner(pid)
     finally:
         dt = datetime.now().strftime("%Y-%d-%m %H:%M:%S")

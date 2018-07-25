@@ -33,5 +33,5 @@ application = app
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG if config['debug'] else logging.WARNING)
+    logging.basicConfig(level=logging.DEBUG if config['debug'] else logging.INFO)
     run(application, host=config["web_ip"], port=config["web_port"], debug=config['debug'])
