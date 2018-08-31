@@ -12,7 +12,7 @@
             <div class="mdui-toolbar">
                 <div><a href="/"><img src="static/images/logo.png" border="0" class="mdui-img-fluid"/></a></div>
                 <div class="mdui-toolbar-spacer"></div>
-                <div>V 1.0a5</div>
+                <div>V 1.0a6</div>
             </div>
             <div class="mdui-tab mdui-color-light-blue-100" mdui-tab>
                 <a id="tab-status" href="#ds-status" class="mdui-ripple">Status</a>
@@ -80,6 +80,10 @@
         <div id="ds-duplicated" class="mdui-p-a-2 mdui-color-light-blue-50 dsbox-page">
             <h2>Duplicatied</h2>
             <div class="mdui-table-fluid">
+                <div class="mdui-toolbar mdui-color-light-blue-50">
+                    <div class="mdui-toolbar-spacer"></div>
+                    <button id="refresh_dup" class="mdui-btn mdui-ripple mdui-color-light-blue-200">Refresh</button>
+                </div>
                 <table id="duplicated" class="mdui-table">
                     <thead>
                     <tr class="mdui-color-theme-100">
@@ -134,6 +138,14 @@
             </div>
         </div>
     </div>
+<div class="mdui-dialog">
+  <div class="mdui-dialog-title">work_dir changed</div>
+  <div class="mdui-dialog-content">Do you want to delete all old data?</div>
+  <div class="mdui-dialog-actions">
+    <button class="mdui-btn mdui-ripple">Yes</button>
+    <button class="mdui-btn mdui-ripple">No</button>
+  </div>
+</div>
     <footer>
         <p>Copyright &copy; 2018 by <a href="//diskr.space/">Diskr.space .</a></p>
         <div>Icons made by <a href="https://www.flaticon.com/authors/smashicons" title="Smashicons">Smashicons</a>
@@ -142,6 +154,6 @@
                 CC 3.0 BY</a></div>
     </footer>
     <script type="text/javascript" src="static/js/mdui.min.js"></script>
-    <script type="text/javascript" src="static/js/diskr.space.js?v=2"></script>
+    <script type="text/javascript" src="static/js/diskr.space.js?v=8"></script>
 </body>
 </html>

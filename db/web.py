@@ -21,6 +21,17 @@ from db.tag import delete_tags
 logger = logging.getLogger(__name__)
 
 
+def get_sysinfo(key):
+    with DBSession(auto_commit=True) as db:
+        res = db.orm.query(SysInfo.value).filter(SysInfo.name==key).first()
+        return res.value if res else None
+
+
+def set_sysinfo(key, value):
+    with DBSession() as db:
+        res = db.orm.query(SysInfo).filter(SysInfo.name==key).first()
+        res.value = value
+
 def get_status(orm):
     sql = """SELECT COUNT(id) AS files, SUM(size) AS size
         FROM fileinfo WHERE ftype='F'
@@ -38,9 +49,14 @@ def get_status(orm):
     return info
 
 
-def get_progress(orm):
-    qry = orm.query(SysInfo).filter(SysInfo.name.in_(["progress", "cur_path", "speed"]))
-    return {item.name: item.value for item in qry.all()}
+def get_progress():
+    with DBSession(auto_commit=True) as db:
+        orm = db.orm
+        qry = orm.query(SysInfo).filter(SysInfo.name.in_(["progress", "cur_path", "speed"]))
+        prog = {item.name: item.value for item in qry.all()}
+        #info = get_status(db.orm)
+    #prog['info'] = info
+    return prog
 
 
 def format_rec(r):
@@ -69,15 +85,14 @@ def get_duplist(orm, page=0, count=50):
     sq = orm.query(FileInfo.checksum, FileInfo.quickhash).filter(FileInfo.checksum!=None,
                                                                  FileInfo.checksum!='-').group_by(
         FileInfo.checksum).having(func.count(FileInfo.checksum)>1).subquery()
-    rs = orm.query(FileInfo).join(sq, and_(FileInfo.checksum==sq.c.checksum,
+    qry = orm.query(FileInfo).join(sq, and_(FileInfo.checksum==sq.c.checksum,
                                            FileInfo.quickhash==sq.c.quickhash)
-                                  ).order_by(FileInfo.size.desc(), FileInfo.checksum,
-                                             FileInfo.dirname)
+                                  ).order_by(FileInfo.size.desc())
     res = []
     dirs = []
     page = page if page > 0 else 0
     count = count if count > 0 and count < 100 else 100
-    for r in rs.all()[page * count:(page + 1) * count]:
+    for r in qry.all()[page * count:(page + 1) * count]:
         res.append(format_rec(r))
         if r.ftype == 'D':
             dirs.append(os.path.join(r.dirname, r.name))

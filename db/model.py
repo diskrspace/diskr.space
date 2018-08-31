@@ -10,7 +10,7 @@ import os
 import logging
 
 from sqlalchemy import engine_from_config
-from sqlalchemy import ForeignKey, Column, Integer, BigInteger, String, Unicode, UnicodeText, DateTime
+from sqlalchemy import ForeignKey, Column, Index, Integer, BigInteger, String, Unicode, UnicodeText, DateTime
 # from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -37,6 +37,10 @@ class FileInfo(Base):
     quickhash = Column(Integer, default=0)
     dirname = Column(UnicodeText(), nullable=False)
     pid = Column(Integer)  # scanner proc id, clean after scan done
+
+
+Index("idx_fullname", FileInfo.dirname, FileInfo.name)
+Index("idx_checksum", FileInfo.checksum, FileInfo.quickhash)
 
 
 class FileTag(Base):

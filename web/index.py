@@ -51,7 +51,7 @@ def get_status(db):
 
 @app.post("/scan")
 def post_scan(db):
-    msg = scan.reset_scanner(db)
+    msg = scan.reset_scanner()
     if msg is None:
         msg = scan.spawn_scanner(config['work_dir'])
     return {"message": msg}
@@ -59,10 +59,10 @@ def post_scan(db):
 
 @app.get("/scan/progress")
 def get_scan_progress(db):
-    msg = scan.reset_scanner(db)
+    msg = scan.reset_scanner()
     if msg is None:
         scan.set_progress(100, "", 0)
-    return web.get_progress(db)
+    return web.get_progress()
 
 
 @app.get("/search")
@@ -82,11 +82,19 @@ def get_duplicated(db, page='0'):
 def delete_duplicated(db, id):
     name = web.remove_dup(db, id)
     if not name:
+        logger.warning("Invalid id: {}".format(id))
         return {"status": "invalid_id"}
     name = os.path.join(os.path.expanduser(config["work_dir"]), name)
     if not config["debug"]:
-        logger.warning(name)
-        shutil.rmtree(name, ignore_errors=True)
+        logger.info("deleting file: {}".format(name))
+        try:
+            if os.path.isdir(name):
+                shutil.rmtree(name)  # , ignore_errors=True)
+            else:
+                os.unlink(name)
+        except Exception as e:
+            logger.error(str(e))
+            return {"status": "rm_fail"}
     return {"status": "ok"}
 
 
@@ -98,8 +106,14 @@ def get_settings():
 
 @app.put("/settings")
 def put_settings(**kwargs):
+    if not kwargs.get("confirm"):
+        work_dir = web.get_sysinfo("work_dir")
+        if work_dir != kwargs.get("work_dir"):
+            return {"confirm": "require"}
+    web.set_sysinfo("work_dir", kwargs.get("work_dir"))
     fields = ("work_dir", "quick_hash_size", "scan_interval")
     for k in fields:
         config[k] = kwargs.get(k, config[k])
     save_config(config_name, config)
     return {}
+
