@@ -22,6 +22,6 @@ def reload_config():
         "web_port": 1888,
         # "auth_user": "admin",
         # "auth_pass": "admin",
-        "debug": False
+        "debug": True
     })
     return config

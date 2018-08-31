@@ -1,5 +1,13 @@
 var $$ = mdui.JQ;
 
+
+function status_info(data) {
+    for (var k in data) {
+        var v = data[k];
+        $$("#status tr td[name=" + k + "]").text(v);
+    }
+}
+
 function update_status() {
     $$("#status tr td[name='files']").text("请稍候...");
     $$.ajax({
@@ -7,10 +15,7 @@ function update_status() {
         url: "status",
         dataType: "json",
         success: function (data, status, xhr) {
-            for (var k in data) {
-                var v = data[k];
-                $$("#status tr td[name=" + k + "]").text(v);
-            }
+            status_info(data);
         }
     });
 }
@@ -25,11 +30,13 @@ function update_progress() {
             if (progress < 100) {
                 $$("#scan_progress div").width(progress + "%");
                 $$("#scan_message").text(data["speed"] + "/s | " + data["cur_path"]);
+                // status_info(data['info']);
                 setTimeout(update_progress, 1000);
             }
             else {
                 $$("#scan_progress").hide();
                 $$("#scan_message").text("");
+                $$("#scan_now").removeAttr("disabled");
                 update_status();
             }
         }
@@ -93,6 +100,10 @@ function update_search(page) {
 
 function dedup_click(e) {
     var id = $$(e.target).parent().attr("data-toggle");
+    var cmd = $$("#duplicated td.command[data-toggle='" + id + "']");
+    cmd.empty();
+    cmd.append($$('<div class="mdui-spinner"></div>'));
+    cmd.mutation();
     $$.ajax({
         method: "DELETE",
         url: "duplicated/" + id,
@@ -100,7 +111,7 @@ function dedup_click(e) {
         success: function (data, status, xhr) {
             var status = data["status"];
             if (status == "ok") {
-                var tr = $$("#duplicated button[data-toggle='" + id + "']").parent().parent();
+                var tr = $$("#duplicated td.command[data-toggle='" + id + "']").parent();
                 var fhash = tr.attr("data-toggle");
                 var same_hash = $$("#duplicated tr[data-toggle='" + fhash + "']");
                 if (same_hash.length == 2) {
@@ -110,6 +121,7 @@ function dedup_click(e) {
                 }
                 mdui.snackbar({message: "删除成功", position: "top", timeout: 1000});
             } else {
+                $$("#duplicated td.command").empty();
                 mdui.snackbar({message: "删除失败：" + status, position: "top", timeout: 1000});
             }
         }
@@ -140,13 +152,22 @@ function update_duplicated(page) {
                 if (v["ftype"] == "D") {
                     size = "&lt;文件夹&gt;" + v["size"];
                 }
-                var btn = $$("<button class='mdui-btn mdui-btn-icon mdui-color-theme-100 mdui-ripple'>"
-                    + "<i class='mdui-icon material-icons'>delete</i></button>");
-                btn.attr("data-toggle", v["id"]);
-                btn.on("click", dedup_click);
                 var tr = $$("<tr><td>" + v["name"] + "</td><td class='mdui-table-col-numeric'>" + size
-                    + "</td><td>" + v["ftime"] + "</td><td></td></tr>");
-                $$(tr.children()[3]).append(btn);
+                    + "</td><td>" + v["ftime"] + "</td><td class='command'></td></tr>");
+                tr.children("td.command").attr("data-toggle", v["id"]);
+                tr.on("click", function (e) {
+                    if ($$("td.command div.mdui-spinner").length > 0) {
+                        return;
+                    }
+                    $$("td.command").empty();
+                    var cmd = $$(e.target).parent().children("td.command");
+                    var id = cmd.attr("data-toggle");
+                    var btn = $$("<button class='mdui-btn mdui-btn-icon mdui-color-theme-100 mdui-ripple'>"
+                        + "<i class='mdui-icon material-icons'>delete</i></button>");
+                    btn.on("click", dedup_click);
+                    btn.attr("data-toggle", id);
+                    cmd.append(btn);
+                });
                 tr.attr("data-toggle", v["fhash"]);
                 if (v["fhash"] != prev_hash) {
                     prev_hash = v["fhash"];
@@ -172,11 +193,14 @@ $$(function () {
     update_status();
     update_progress();
     $$("#tab-status").on("show.mdui.tab", function () {
-        update_status();
+        if ($$("#scan_progress")[0].clientHeight == 0) {
+            update_status();
+        }
     });
     $$("#scan_now").on("click", function () {
         if ($$("#scan_progress")[0].clientHeight == 0) {
             $$("#scan_progress").show();
+            $$("#scan_now").attr("disabled", "1");
             setTimeout(update_progress, 5000);
             $$.ajax({
                 method: "POST",
@@ -192,6 +216,11 @@ $$(function () {
         update_search(0);
     });
     $$("#tab-duplicated").on("show.mdui.tab", function () {
+        if ($$("#duplicated tbody").children().length == 0) {
+            update_duplicated(0);
+        }
+    });
+    $$("#refresh_dup").on("click", function () {
         update_duplicated(0);
     });
     $$("#tab-settings").on("show.mdui.tab", function () {
@@ -219,7 +248,35 @@ $$(function () {
             data: params,
             dataType: "json",
             success: function (data, status, xhr) {
-                mdui.snackbar({message: "Settings saved", position: "top", timeout: 2000});
+                if (data['confirm'] == "require") {
+                  mdui.dialog({
+                      title: 'work_dir changed',
+                      content: 'Do you want to delete all old data?',
+                      buttons: [
+                        {
+                          text: 'Cancel'
+                        },
+                        {
+                          text: 'Confirm',
+                          onClick: function(e){
+                            params['confirm'] = "true";
+                            $$.ajax({
+                                method: "PUT",
+                                url: "settings",
+                                data: params,
+                                dataType: "json",
+                                success: function (data, status, xhr) {
+                                    mdui.snackbar({message: "Settings saved", position: "top", timeout: 2000});
+                                }
+                            });
+                          }
+                        }
+                      ]
+                  });
+                }
+                else {
+                    mdui.snackbar({message: "Settings saved", position: "top", timeout: 2000});
+                }
             }
         });
     });

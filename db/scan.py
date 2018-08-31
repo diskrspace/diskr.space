@@ -8,6 +8,7 @@
 """
 from datetime import datetime
 from multiprocessing import Process
+from traceback import format_exc
 import hashlib
 import os
 import logging
@@ -47,8 +48,10 @@ def set_progress(progress, cur_path, speed):
 
 
 def check_pid(pid):
+    if not pid:
+        return False
     try:
-        os.kill(pid, 0)
+        os.kill(int(pid), 0)
     except OSError:
         return False
     return True
@@ -104,6 +107,7 @@ def add_file(orm, filerec, pid, ftype, dirname, name, size, ftime, tags, **kwarg
     if not ftime:
         return None
     if filerec:
+        logger.debug("file_id: %d" % filerec.id)
         filerec.ftype = ftype
         filerec.size = size
         filerec.ftime = ftime
@@ -117,6 +121,7 @@ def add_file(orm, filerec, pid, ftype, dirname, name, size, ftime, tags, **kwarg
         orm.add(filerec)
         orm.flush()
         orm.refresh(filerec)
+        logger.debug("new file_id: %d" % filerec.id)
         add_tags(orm, filerec.id, tags)
     return filerec.id
 
@@ -132,6 +137,7 @@ def clean_notexists():
                 r.size = size
                 r.checksum = None
             else:
+                logger.info("not exists: {}".format(fullname))
                 delete_tags(db.orm, r.id)
                 db.orm.delete(r)
 
@@ -182,6 +188,9 @@ def clean_scanner(pid):
         rs = db.orm.query(FileInfo).filter(FileInfo.pid == pid).all()
         for r in rs:
             r.pid = None
+        r = db.orm.query(SysInfo).filter(SysInfo.name=="pid").first()
+        if r:
+            r.value = None
 
 
 def make_fileinfo(fullname, root, linkpath=None):
@@ -270,6 +279,7 @@ class ScanBatch:
                 except UnicodeEncodeError:
                     logger.error("Unicode error: {dirname}/{name}".format(**fileinfo))
                 except Exception as e:
+                    logger.error(format_exc())
                     logger.error("Error : {dirname}/{name} {error}".format(error=str(e), **fileinfo))
                     break
         self.batch = []
@@ -314,6 +324,8 @@ def scan_dir(pid, root, force=False, linkpath=None, batch=None):
                 with DBSession(auto_commit=True) as db:
                     notexists = db.orm.query(FileInfo.id).filter(FileInfo.dirname==fileinfo['dirname'],
                                                                  FileInfo.name==fileinfo['name']).first() is None
+                if root.startswith(fileinfo['realname']):
+                    continue  # skip link to ancestor
                 if force or notexists:
                     scan_dir(pid, fileinfo['realname'], force,
                                      os.path.join(fileinfo['dirname'], fileinfo['name']), batch=batch)
@@ -331,7 +343,11 @@ def scanner(root):
     try:
         pid = os.getpid()
         try:
-            with DBSession(auto_commit=True) as db:
+            with DBSession() as db:
+                sql = """DELETE FROM filetag WHERE file_id NOT IN (SELECT ID FROM fileinfo)"""
+                with SQLResult(db.orm, sql) as res:
+                    if res.rowcount > 0:
+                        logger.info("Delete {} tags.".format(res.rowcount))
                 r = db.orm.query(SysInfo).filter(SysInfo.name=="pid").first()
                 if r:
                     r.value = str(pid)
@@ -342,6 +358,7 @@ def scanner(root):
                 if r:
                     force = (datetime.now() - datetime.strptime(r.value, "%Y-%m-%d %H:%M:%S")
                              ).seconds > int(config['scan_interval'])
+                logger.warning("force: {}".format(force))
             set_progress(1, "", speed)
             scan_dir(pid, root, force)
             with DBSession(auto_commit=True) as db:
@@ -359,8 +376,8 @@ def scanner(root):
             logger.info("Elapsed time: {}".format((datetime.now() - timer).seconds))
             clean_scanner(pid)
     finally:
-        dt = datetime.now().strftime("%Y-%d-%m %H:%M:%S")
-        with DBSession(auto_commit=True) as db:
+        dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with DBSession() as db:
             r = db.orm.query(SysInfo).filter(SysInfo.name=="last_scan").first()
             if r:
                 r.value = dt
@@ -370,15 +387,15 @@ def scanner(root):
 
 
 def reset_scanner():
-    with DBSession(auto_commit=True) as db:
+    with DBSession() as db:
         orm = db.orm
         r = orm.query(SysInfo).filter(SysInfo.name=="pid").first()
-        if r and check_pid(int(r.value)):
-            return "Scanner working, please wait..."
+        if r and check_pid(r.value):
+            return "Scanner {} working, please wait...".format(r.value)
         pids = orm.query(FileInfo.pid).filter(FileInfo.pid != None).distinct()
         for p in pids:
             if check_pid(p.pid):
-                return "Scanner working, please wait..."
+                return "Scanner {} working, please wait...".format(p.pid)
             else:
                 sql = """UPDATE fileinfo SET pid=null WHERE pid = :pid"""
                 with SQLResult(orm, sql, pid=p.pid) as res:

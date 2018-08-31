@@ -85,17 +85,16 @@ def delete_duplicated(db, id):
         logger.warning("Invalid id: {}".format(id))
         return {"status": "invalid_id"}
     name = os.path.join(os.path.expanduser(config["work_dir"]), name)
-    logger.info("deleting file: {}".format(name))
     if not config["debug"]:
-        logger.warning(name)
-        if os.path.isdir(name):
-            try:
+        logger.info("deleting file: {}".format(name))
+        try:
+            if os.path.isdir(name):
                 shutil.rmtree(name)  # , ignore_errors=True)
-            except Exception as e:
-                logger.error(str(e))
-                return {"status": "rmtree_fail"}
-        else:
-            os.unlink(name)
+            else:
+                os.unlink(name)
+        except Exception as e:
+            logger.error(str(e))
+            return {"status": "rm_fail"}
     return {"status": "ok"}
 
 
@@ -107,8 +106,14 @@ def get_settings():
 
 @app.put("/settings")
 def put_settings(**kwargs):
+    if not kwargs.get("confirm"):
+        work_dir = web.get_sysinfo("work_dir")
+        if work_dir != kwargs.get("work_dir"):
+            return {"confirm": "require"}
+    web.set_sysinfo("work_dir", kwargs.get("work_dir"))
     fields = ("work_dir", "quick_hash_size", "scan_interval")
     for k in fields:
         config[k] = kwargs.get(k, config[k])
     save_config(config_name, config)
     return {}
+
