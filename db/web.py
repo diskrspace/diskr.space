@@ -81,22 +81,36 @@ def get_search(orm, tags, page=0, count=50):
     return [format_rec(r) for r in qry.order_by(FileInfo.dirname).all()[page * count:(page + 1) * count]]
 
 
-def get_duplist(orm, page=0, count=50):
+def get_duplist(orm, since_size=0, count=50):
+    since_size = since_size if since_size > 0 else 0
     sq = orm.query(FileInfo.checksum, FileInfo.quickhash).filter(FileInfo.checksum!=None,
                                                                  FileInfo.checksum!='-').group_by(
         FileInfo.checksum).having(func.count(FileInfo.checksum)>1).subquery()
     qry = orm.query(FileInfo).join(sq, and_(FileInfo.checksum==sq.c.checksum,
                                            FileInfo.quickhash==sq.c.quickhash)
-                                  ).order_by(FileInfo.size.desc())
+                                  )
+    if since_size > 0:
+        qry = qry.filter(FileInfo.size<=since_size)
+    qry = qry.order_by(FileInfo.size.desc())
     res = []
     dirs = []
-    page = page if page > 0 else 0
     count = count if count > 0 and count < 100 else 100
-    for r in qry.all()[page * count:(page + 1) * count]:
-        res.append(format_rec(r))
-        if r.ftype == 'D':
-            dirs.append(os.path.join(r.dirname, r.name))
-    return [r for r in res if r["parent"] not in dirs]
+    index = 0
+    while index >= 0:
+        for r in qry.all()[index:index + count]:
+            if r.ftype == 'D':
+                d = os.path.join(r.dirname, r.name)
+                if d not in dirs:
+                    dirs.append(d)
+            rec = format_rec(r)
+            if rec['parent'] not in dirs:
+                res.append(rec)
+        if len(res) < count:
+            index += count
+        else:
+            index = -1
+    return res
+
 
 
 def remove_file_or_dir(orm, rec):

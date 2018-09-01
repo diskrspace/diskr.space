@@ -1,4 +1,5 @@
 var $$ = mdui.JQ;
+var patSize = /.*\(([0-9]+)\)/;
 
 
 function status_info(data) {
@@ -54,10 +55,10 @@ function get_more(tbody, cols, page, fn) {
     tbody.append(tr);
 }
 
-function get_wait(tbody, cols, page) {
+function get_wait(tbody, cols, init) {
     var tr = $$("<tr data-toggle='wait'><td colspan='" + cols
         + "' class='mdui-color-theme-50'>等待查询结果...</td></tr>");
-    if (page == 0) {
+    if (init == 0) {
         tbody.empty();
     } else {
         tbody.find("tr[data-toggle='more']").remove();
@@ -114,7 +115,27 @@ function dedup_click(e) {
                 var tr = $$("#duplicated td.command[data-toggle='" + id + "']").parent();
                 var fhash = tr.attr("data-toggle");
                 var same_hash = $$("#duplicated tr[data-toggle='" + fhash + "']");
+                var cls_odd = "mdui-color-theme-50";
                 if (same_hash.length == 2) {
+                    var trs = $$("#duplicated tbody tr");
+                    var flag = 0;
+                    $$.each(trs, function (i, v) {
+                        v = $$(v);
+                        if (flag == 0 && v.attr('data-toggle') == fhash) {
+                            flag = 1;
+                        }
+                        if (flag == 1 && v.attr('data-toggle') != fhash) {
+                            flag = 2;
+                        }
+                        if (flag == 2) {
+                            if (v.hasClass(cls_odd)) {
+                                v.removeClass(cls_odd);
+                            }
+                            else {
+                                v.addClass(cls_odd);
+                            }
+                        }
+                    });
                     same_hash.remove();
                 } else {
                     tr.remove();
@@ -128,13 +149,14 @@ function dedup_click(e) {
     });
 }
 
-function update_duplicated(page) {
+function update_duplicated(since_size) {
+    $$("#refresh_dup").attr("disabled", "1");
     var tbody = $$("#duplicated tbody");
-    get_wait(tbody, 4, page);
+    get_wait(tbody, 4, since_size);
     $$.ajax({
         method: "GET",
         url: "duplicated",
-        data: {"page": page},
+        data: {"since_size": since_size},
         dataType: "json",
         success: function (data, status, xhr) {
             tbody.find("tr[data-toggle='wait']").remove();
@@ -146,9 +168,13 @@ function update_duplicated(page) {
             if (tr.hasClass(cls_odd)) {
                 cls = cls_odd;
             }
+            var last_size = data[data.length - 1]['size'];
             for (var k in data) {
                 var v = data[k];
                 var size = v["size"];
+                if (size == last_size) {
+                    break;
+                }
                 if (v["ftype"] == "D") {
                     size = "&lt;文件夹&gt;" + v["size"];
                 }
@@ -182,9 +208,14 @@ function update_duplicated(page) {
                 }
                 tbody.append(tr);
             }
-            if (data.length == 50) {
-                get_more(tbody, 4, parseInt(page) + 1, update_duplicated);
+            if (data.length >= 50) {
+                var m = patSize.exec(last_size);
+                if (m.length == 2) {
+                    since_size = m[1];
+                }
+                get_more(tbody, 4, parseInt(since_size), update_duplicated);
             }
+            $$("#refresh_dup").removeAttr("disabled");
         }
     });
 }
@@ -201,7 +232,7 @@ $$(function () {
         if ($$("#scan_progress")[0].clientHeight == 0) {
             $$("#scan_progress").show();
             $$("#scan_now").attr("disabled", "1");
-            setTimeout(update_progress, 5000);
+            setTimeout(update_progress, 2000);
             $$.ajax({
                 method: "POST",
                 url: "scan",

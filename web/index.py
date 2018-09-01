@@ -73,8 +73,8 @@ def get_search(db, tags, page='0'):
 
 
 @app.get("/duplicated")
-def get_duplicated(db, page='0'):
-    res = web.get_duplist(db, int(page))
+def get_duplicated(db, since_size='0'):
+    res = web.get_duplist(db, int(since_size))
     return {"dupfiles": res}
 
 
