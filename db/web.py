@@ -103,7 +103,9 @@ def get_duplist(orm, since_size=0, count=50):
     dirs = []
     count = count if count > 0 and count < 100 else 100
     index = 0
-    while index >= 0:
+    while True:
+        if index > qry.count():
+            break
         for r in qry.all()[index:index + count]:
             if r.ftype == 'D':
                 d = os.path.join(r.dirname, r.name)
@@ -115,7 +117,7 @@ def get_duplist(orm, since_size=0, count=50):
         if len(res) < count:
             index += count
         else:
-            index = -1
+            break
     return res
 
 
