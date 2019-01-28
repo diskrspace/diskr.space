@@ -30,7 +30,14 @@ def get_sysinfo(key):
 def set_sysinfo(key, value):
     with DBSession() as db:
         res = db.orm.query(SysInfo).filter(SysInfo.name==key).first()
-        res.value = value
+        if res:
+            res.value = value
+        else:
+            res = SysInfo(name=key, value=value)
+            db.orm.add(res)
+            db.orm.flush()
+            # db.orm.refresh(res)
+
 
 def get_status(orm):
     sql = """SELECT COUNT(id) AS files, SUM(size) AS size
@@ -129,7 +136,7 @@ def remove_file_or_dir(orm, rec):
 
 def remove_dup(orm, id):
     rec = orm.query(FileInfo).filter(FileInfo.id==id).first()
-    if not rec.checksum:
+    if not rec or not rec.checksum:
         return None
     name = os.path.join(rec.dirname, rec.name)
     rs = orm.query(FileInfo).filter(FileInfo.dirname == name).all()

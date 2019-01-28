@@ -152,7 +152,7 @@ function dedup_click(e) {
 function update_duplicated(since_size) {
     $$("#refresh_dup").attr("disabled", "1");
     var tbody = $$("#duplicated tbody");
-    get_wait(tbody, 4, since_size);
+    get_wait(tbody, 5, since_size);
     $$.ajax({
         method: "GET",
         url: "duplicated",
@@ -178,8 +178,11 @@ function update_duplicated(since_size) {
                 if (v["ftype"] == "D") {
                     size = "&lt;文件夹&gt;" + v["size"];
                 }
-                var tr = $$("<tr><td>" + v["name"] + "</td><td class='mdui-table-col-numeric'>" + size
+                var tr = $$("<tr><td class='selected'><label class='mdui-checkbox'>"
+                    + "<input type='checkbox' name='selected_dup' /><i class='mdui-checkbox-icon'></i></label></td><td>"
+                    + v["name"] + "</td><td class='mdui-table-col-numeric'>" + size
                     + "</td><td>" + v["ftime"] + "</td><td class='command'></td></tr>");
+                tr.children("td.selected").attr("data-toggle", v["id"]);
                 tr.children("td.command").attr("data-toggle", v["id"]);
                 tr.on("click", function (e) {
                     if ($$("td.command div.mdui-spinner").length > 0) {
@@ -213,9 +216,128 @@ function update_duplicated(since_size) {
                 if (m.length == 2) {
                     since_size = m[1];
                 }
-                get_more(tbody, 4, parseInt(since_size), update_duplicated);
+                get_more(tbody, 5, parseInt(since_size), update_duplicated);
             }
             $$("#refresh_dup").removeAttr("disabled");
+            $$("input[name=selected_dup").on("change", check_selected_dup);
+            // $$("#select_top").prop("checked", false);
+            // $$("#select_bottom").prop("checked", false);
+            if ($$("#select_top").prop("checked")) {
+                dup_selected(false);
+            }
+            else if ($$("#select_bottom").prop("checked")) {
+                dup_selected(true);
+            }
+        }
+    });
+}
+
+function dup_selected(exclude_first) {  // or exclude last
+    var selected_name = "select_top";
+    var unselected_name = "select_bottom";
+    if (exclude_first) {
+        selected_name = "select_bottom";
+        unselected_name = "select_top";
+    }
+    if ($$("#" + selected_name).prop("checked")) {
+        $$("#" + unselected_name).prop("checked", false);
+        $$("input[name=selected_dup]").prop("checked", true);
+        var trs = $$("#duplicated tbody tr");
+        var fhash = "";
+        $$.each(trs, function (i, v) {
+            v = $$(v);
+            if (v.attr('data-toggle') != fhash) {
+                fhash = v.attr('data-toggle');
+                var ck = $$("#duplicated tbody tr[data-toggle='" + fhash + "'] input[name='selected_dup']");
+                var idx = ck.length - 1;
+                if (exclude_first) {
+                    idx = 0;
+                }
+                $$(ck[idx]).prop("checked", false);
+            }
+        });
+    }
+    else {
+        $$("input[name=selected_dup]").prop("checked", false);
+    }
+}
+
+function check_selected_dup(e) {
+    var fhash = $$(e.target).parent().parent().parent().attr("data-toggle");
+    var cks = $$("#duplicated tbody tr[data-toggle='" + fhash + "'] input[name='selected_dup']");
+    var all = true;
+    $$.each(cks, function (i, v) {
+        v = $$(v);
+        if (!v.prop("checked")) {
+            all = false;
+        }
+    });
+    if (all) {
+        alert("Don't delete all!");
+        $$(e.target).prop("checked", false);
+    }
+}
+
+function delete_selected_items() {
+    var selected = $$("input[name='selected_dup']:checked");
+    var items = "";
+    $$.each(selected, function (i, v) {
+        v = $$(v).parent().parent();
+        if (items == "") {
+            items = v.attr("data-toggle");
+        }
+        else {
+            items += "," + v.attr("data-toggle");
+        }
+    });
+    $$.ajax({
+        method: "DELETE",
+        url: "duplicated",
+        data: {"selected_dup": items},
+        dataType: "json",
+        success: function (data, status, xhr) {
+            var success = data["success"];
+            var fail = data["fail"];
+            $$.each(success, function (i, v) {
+                var tr = $$("#duplicated td.command[data-toggle='" + v + "']").parent();
+                var fhash = tr.attr("data-toggle");
+                var same_hash = $$("#duplicated tr[data-toggle='" + fhash + "']");
+                var cls_odd = "mdui-color-theme-50";
+                if (same_hash.length == 2) {
+                    var trs = $$("#duplicated tbody tr");
+                    var flag = 0;
+                    $$.each(trs, function (i, v) {
+                        v = $$(v);
+                        if (flag == 0 && v.attr('data-toggle') == fhash) {
+                            flag = 1;
+                        }
+                        if (flag == 1 && v.attr('data-toggle') != fhash) {
+                            flag = 2;
+                        }
+                        if (flag == 2) {
+                            if (v.hasClass(cls_odd)) {
+                                v.removeClass(cls_odd);
+                            }
+                            else {
+                                v.addClass(cls_odd);
+                            }
+                        }
+                    });
+                    same_hash.remove();
+                } else {
+                    tr.remove();
+                }
+            });
+            $$.each(fail, function (i, v) {
+                var tr = $$("#duplicated td.command[data-toggle='" + v + "']").parent();
+                var cls_odd = "mdui-color-theme-50";
+                var cls_fail = "mdui-color-deep-orange-200";
+                tr.removeClass(cls_odd);
+                tr.addClass(cls_fail);
+            });
+            mdui.snackbar({message: "删除成功 " + success.length + ", 删除失败 " + fail.length, position: "top",
+                timeout: 5000});
+            update_duplicated(0);
         }
     });
 }
@@ -251,6 +373,13 @@ $$(function () {
             update_duplicated(0);
         }
     });
+    $$("#select_top").on("change", function () {
+        dup_selected(false);
+    });
+    $$("#select_bottom").on("click", function () {
+        dup_selected(true);
+    });
+    $$("#delete_selected").on("click", delete_selected_items);
     $$("#refresh_dup").on("click", function () {
         update_duplicated(0);
     });
