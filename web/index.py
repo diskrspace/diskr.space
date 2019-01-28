@@ -74,6 +74,8 @@ def get_search(db, tags, page='0'):
 
 @app.get("/duplicated")
 def get_duplicated(db, since_size='0'):
+    if not since_size:
+        since_size = 0
     res = web.get_duplist(db, int(since_size))
     return {"dupfiles": res}
 
@@ -96,6 +98,31 @@ def delete_duplicated(db, id):
             logger.error(str(e))
             return {"status": "rm_fail"}
     return {"status": "ok"}
+
+
+@app.delete("/duplicated")
+def delete_selected_dup(db, selected_dup):
+    result_ok = []
+    result_err = []
+    for id in selected_dup.split(","):
+        id = id.strip()
+        name = web.remove_dup(db, id)
+        if not name:
+            result_err.append(id)
+            continue
+        name = os.path.join(os.path.expanduser(config["work_dir"]), name)
+        if not config["debug"]:
+            logger.info("deleting file: {}".format(name))
+            try:
+                if os.path.isdir(name):
+                    shutil.rmtree(name)  # , ignore_errors=True)
+                else:
+                    os.unlink(name)
+            except Exception as e:
+                logger.error(str(e))
+                result_err.append(id)
+        result_ok.append(id)
+    return {"success": result_ok, "fail": result_err}
 
 
 @app.get("/settings")
