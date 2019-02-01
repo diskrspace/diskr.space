@@ -80,12 +80,11 @@ def get_duplicated(db, since_size='0'):
     return {"dupfiles": res}
 
 
-@app.delete("/duplicated/<id:int>")
-def delete_duplicated(db, id):
-    name = web.remove_dup(db, id)
+def remove_file_or_dir(db, id):
+    name = web.remove_dup(db, id, os.path.expanduser(config["work_dir"]))
     if not name:
         logger.warning("Invalid id: {}".format(id))
-        return {"status": "invalid_id"}
+        return "invalid_id"
     name = os.path.join(os.path.expanduser(config["work_dir"]), name)
     if not config["debug"]:
         logger.info("deleting file: {}".format(name))
@@ -96,8 +95,18 @@ def delete_duplicated(db, id):
                 os.unlink(name)
         except Exception as e:
             logger.error(str(e))
-            return {"status": "rm_fail"}
-    return {"status": "ok"}
+            return "rm_fail"
+    return "ok"
+
+
+rm_messages = {"invalid_id": "删除文件失败，可能是文件不存在，或已经不是重复文件",
+               "rm_fail": "删除文件出错，可能是没有权限或文件正在使用中"}
+
+
+@app.delete("/duplicated/<id:int>")
+def delete_duplicated(db, id):
+    status = remove_file_or_dir(db, id)
+    return {"status": rm_messages.get(status, "未知错误，删除失败")}
 
 
 @app.delete("/duplicated")
@@ -106,22 +115,13 @@ def delete_selected_dup(db, selected_dup):
     result_err = []
     for id in selected_dup.split(","):
         id = id.strip()
-        name = web.remove_dup(db, id)
-        if not name:
+        status = remove_file_or_dir(db, id)
+        if status=="ok":
+            result_ok.append(id)
+        else:
             result_err.append(id)
-            continue
-        name = os.path.join(os.path.expanduser(config["work_dir"]), name)
-        if not config["debug"]:
-            logger.info("deleting file: {}".format(name))
-            try:
-                if os.path.isdir(name):
-                    shutil.rmtree(name)  # , ignore_errors=True)
-                else:
-                    os.unlink(name)
-            except Exception as e:
-                logger.error(str(e))
-                result_err.append(id)
-        result_ok.append(id)
+            if status=="invalid_id":
+                continue
     return {"success": result_ok, "fail": result_err}
 
 
