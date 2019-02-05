@@ -17,7 +17,8 @@ def reload_config():
         "work_dir":"~/",
         "quick_hash_size": "0", # 0 - no quick hash or quick hash file size
         "scan_interval": 86400,
-        "web_path": "diskr.space",
+        "static_path": "/diskr.space/static",
+        "web_path": "/diskr.space",
         "web_ip": "127.0.0.1",
         "web_port": 1888,
         # "auth_user": "admin",

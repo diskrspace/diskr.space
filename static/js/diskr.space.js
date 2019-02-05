@@ -13,7 +13,7 @@ function update_status() {
     $$("#status tr td[name='files']").text("请稍候...");
     $$.ajax({
         method: "GET",
-        url: "status",
+        url: WEB_PATH + "/status",
         dataType: "json",
         success: function (data, status, xhr) {
             status_info(data);
@@ -24,7 +24,7 @@ function update_status() {
 function update_progress() {
     $$.ajax({
         method: "GET",
-        url: "scan/progress",
+        url: WEB_PATH + "/scan/progress",
         dataType: "json",
         success: function (data, status, xhr) {
             var progress = parseInt(data["progress"]);
@@ -76,7 +76,7 @@ function update_search(page) {
     get_wait(tbody, 3, page);
     $$.ajax({
         method: "GET",
-        url: "search",
+        url: WEB_PATH + "/search",
         data: {"tags": tags, "page": page},
         dataType: "json",
         success: function (data, status, xhr) {
@@ -107,7 +107,7 @@ function dedup_click(e) {
     cmd.mutation();
     $$.ajax({
         method: "DELETE",
-        url: "duplicated/" + id,
+        url: WEB_PATH + "/duplicated/" + id,
         dataType: "json",
         success: function (data, status, xhr) {
             var status = data["status"];
@@ -155,7 +155,7 @@ function update_duplicated(since_size) {
     get_wait(tbody, 5, since_size);
     $$.ajax({
         method: "GET",
-        url: "duplicated",
+        url: WEB_PATH + "/duplicated",
         data: {"since_size": since_size},
         dataType: "json",
         success: function (data, status, xhr) {
@@ -292,7 +292,7 @@ function delete_selected_items() {
     });
     $$.ajax({
         method: "DELETE",
-        url: "duplicated",
+        url: WEB_PATH + "/duplicated",
         data: {"selected_dup": items},
         dataType: "json",
         success: function (data, status, xhr) {
@@ -357,7 +357,7 @@ $$(function () {
             setTimeout(update_progress, 2000);
             $$.ajax({
                 method: "POST",
-                url: "scan",
+                url: WEB_PATH + "/scan",
                 dataType: "json",
                 success: function (data, status, xhr) {
                     mdui.snackbar({message: data['message'], position: "top", timeout: 1000});
@@ -386,7 +386,7 @@ $$(function () {
     $$("#tab-settings").on("show.mdui.tab", function () {
         $$.ajax({
             method: "GET",
-            url: "settings",
+            url: WEB_PATH + "/settings",
             dataType: "json",
             success: function (data, status, xhr) {
                 for (var k in data) {
@@ -404,7 +404,7 @@ $$(function () {
         });
         $$.ajax({
             method: "PUT",
-            url: "settings",
+            url: WEB_PATH + "/settings",
             data: params,
             dataType: "json",
             success: function (data, status, xhr) {
@@ -422,7 +422,7 @@ $$(function () {
                             params['confirm'] = "true";
                             $$.ajax({
                                 method: "PUT",
-                                url: "settings",
+                                url: WEB_PATH + "/settings",
                                 data: params,
                                 dataType: "json",
                                 success: function (data, status, xhr) {

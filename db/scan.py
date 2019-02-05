@@ -121,7 +121,7 @@ def add_file(orm, filerec, pid, ftype, dirname, name, size, ftime, tags, **kwarg
         orm.add(filerec)
         orm.flush()
         orm.refresh(filerec)
-        logger.debug("new file_id: %d" % filerec.id)
+        logger.debug("new file_id: %d(%s%s)" % (filerec.id, dirname + "/" if dirname else "", name))
         add_tags(orm, filerec.id, tags)
     return filerec.id
 

@@ -122,7 +122,7 @@ def get_duplist(orm, since_size=0, count=50):
 
 
 
-def remove_file_or_dir(orm, rec):
+def remove_filedir_info(orm, rec):
     sql = """SELECT id FROM fileinfo WHERE id<>:id AND checksum=:checksum AND quickhash=:quickhash"""
     with SQLResult(orm, sql, id=rec.id, checksum=rec.checksum, quickhash=rec.quickhash) as res:
         data = res.all()
@@ -136,16 +136,37 @@ def remove_file_or_dir(orm, rec):
     orm.delete(rec)
 
 
-def remove_dup(orm, id):
-    rec = orm.query(FileInfo).filter(FileInfo.id==id).first()
-    if not rec or not rec.checksum:
-        return None
+def remove_all_filedir(orm, rec):
     name = os.path.join(rec.dirname, rec.name)
     rs = orm.query(FileInfo).filter(FileInfo.dirname == name).all()
     for r in rs:
-        remove_file_or_dir(orm, r)
+        remove_filedir_info(orm, r)
     rs = orm.query(FileInfo).filter(FileInfo.dirname.like("{}{}%".format(name, os.path.sep))).all()
     for r in rs:
-        remove_file_or_dir(orm, r)
-    remove_file_or_dir(orm, rec)
+        remove_filedir_info(orm, r)
+    remove_filedir_info(orm, rec)
+    return name
+
+
+def remove_dup(orm, id, root):
+    rec = orm.query(FileInfo).filter(FileInfo.id==id).first()
+    if not rec or not rec.checksum:
+        return None
+    # remove duplicated files or directories info if they are not exists
+    rs = orm.query(FileInfo).filter(FileInfo.checksum==rec.checksum).filter(FileInfo.quickhash==rec.quickhash).filter(
+        FileInfo.id!=id).all()
+    for r in rs:
+        fullname = os.path.join(root, r.dirname, r.name)
+        if not os.path.exists(fullname):
+            logger.debug("File %s not exists" % fullname)
+            remove_all_filedir(orm, r)
+    # check this file or directory is still duplicated
+    orm.flush()
+    orm.refresh(rec)
+    logger.debug(str(rec))
+    # rec = orm.query(FileInfo).filter(FileInfo.id==id).first()
+    if not rec or not rec.checksum:
+        logger.debug("File %s now not duplicated" % rec.name)
+        return None
+    name = remove_all_filedir(orm, rec)
     return name
