@@ -3,16 +3,17 @@
 <head>
 	<meta charset="UTF-8">
 	<title>Diskr.space</title>
-    <link rel="stylesheet" href="static/css/mdui.min.css">
-    <link rel="stylesheet" href="static/css/diskr.space.css?v=2">
+    <link rel="shortcut icon" href="{{static_path}}/images/favicon.png"/>
+    <link rel="stylesheet" href="{{static_path}}/css/mdui.min.css">
+    <link rel="stylesheet" href="{{static_path}}/css/diskr.space.css?v=2">
 </head>
 <body class="mdui-theme-primary-light-blue">
     <div class="mdui-container-fluid">
         <div class="mdui-appbar mdui-appbar-scroll-hide">
             <div class="mdui-toolbar">
-                <div><a href="/"><img src="static/images/logo.png" border="0" class="mdui-img-fluid"/></a></div>
+                <div><a href="/"><img src="{{static_path}}/images/logo.png" border="0" class="mdui-img-fluid"/></a></div>
                 <div class="mdui-toolbar-spacer"></div>
-                <div>V 1.0a7</div>
+                <div>V 1.0a8</div>
             </div>
             <div class="mdui-tab mdui-color-light-blue-100" mdui-tab>
                 <a id="tab-status" href="#ds-status" class="mdui-ripple">Status</a>
@@ -161,7 +162,10 @@
             is licensed by <a href="http://creativecommons.org/licenses/by/3.0/" title="Creative Commons BY 3.0" target="_blank">
                 CC 3.0 BY</a></div>
     </footer>
-    <script type="text/javascript" src="static/js/mdui.min.js"></script>
-    <script type="text/javascript" src="static/js/diskr.space.js?v=8"></script>
+    <script type="text/javascript">
+    var WEB_PATH="{{web_path}}";
+    </script>
+    <script type="text/javascript" src="{{static_path}}/js/mdui.min.js"></script>
+    <script type="text/javascript" src="{{static_path}}/js/diskr.space.js?v=8"></script>
 </body>
 </html>

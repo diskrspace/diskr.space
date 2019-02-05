@@ -20,16 +20,9 @@ logger = logging.getLogger(__name__)
 
 config = reload_config()
 
-app = Bottle()
-app.mount("/{web_path}".format(**config), index)
+application = Bottle()
+application.mount("{web_path}".format(**config), index)
 
-
-@app.get("/favicon.ico")
-def get_():
-    return static_file('favicon.png', root=get_fullname("static"))
-
-
-application = app
 
 
 if __name__ == "__main__":

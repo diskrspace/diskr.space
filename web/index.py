@@ -10,7 +10,7 @@ import os
 import shutil
 import logging
 
-from bottle import Bottle, static_file
+from bottle import Bottle, static_file, view
 from bottle.ext.sqlalchemy import Plugin as SAPlugin
 
 from config import config_name, reload_config
@@ -30,8 +30,9 @@ app.install(AuthPlugin(dbkeyword='db'))
 
 
 @app.get("/")
+@view("index")
 def get_():
-    return static_file('index.html', root=get_fullname("static"))
+    return {"static_path": config['static_path'], "web_path": config['web_path']}
 
 
 @app.get("/static/<filename:path>")
