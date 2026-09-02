@@ -1,6 +1,6 @@
 # Diskr.space 技术说明
 
-Diskr.space 已迁移到 FastAPI + Vue 3 前后端分离架构。本文介绍项目结构、配置和部署要点；面向普通用户的安装和使用方法请参阅根目录 [README](../README.md)。
+Diskr.space 已`迁移到 FastAPI + Vue 3 前后端分离架构。`本文介绍项目结构、配置和部署要点；面向普通用户的安装和使用方法请参阅根目录 [README](../README.md)。
 
 ## 项目结构
 
