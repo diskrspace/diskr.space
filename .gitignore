@@ -107,4 +107,4 @@ venv.bak/
 .idea
 .vscode
 .DS_Store
-docs
+node_modules/

@@ -9,6 +9,7 @@
 from traceback import format_tb
 import logging
 
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from db.model import engine
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 class SQLResult(object):
     def __init__(self, orm, sql, exc_params=None, **kwargs):
         exc_params = exc_params if isinstance(exc_params, dict) else {}
-        self.result = orm.execute(sql, params=kwargs, **exc_params)
+        self.result = orm.execute(text(sql), params=kwargs, **exc_params)
         self.rowcount = self.result.rowcount
         self.lastrowid = self.result.lastrowid
 
@@ -36,44 +37,45 @@ class SQLResult(object):
         self.result.close()
 
     def all(self):
-        return [dict(zip(i.keys(), i.values())) for i in self.result]
+        return [dict(i._mapping) for i in self.result]
 
     def first(self):
         try:
-            rec = self.result.__iter__().__next__()
-            return dict(zip(rec.keys(), rec.values()))
-        except StopIteration:
+            row = self.result.first()
+            return dict(row._mapping) if row is not None else None
+        except:
+            logger.error("", exc_info=True)
             return None
 
     def scalar(self):
-        rec = self.first()
-        return rec.values()[0]
+        return self.result.scalar()
 
     def scalars(self):
-        return [i.values()[0] for i in self.result]
+        return list(self.result.scalars())
 
 
 class DBSession(object):
-    def __init__(self, maker=None, auto_commit=False):
+    def __init__(self, maker=None):  # , auto_commit=False):
         if maker is None:
-            maker = sessionmaker(bind=engine, autocommit=auto_commit)
+            maker = sessionmaker(bind=engine, expire_on_commit=False, future=True)
         self.maker = maker
-        self.auto_commit = auto_commit
+        # self.auto_commit = auto_commit
 
     def __enter__(self):
         self.orm = self.maker()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.auto_commit:
-            self.orm.close()
-            return
+        # if self.auto_commit:
+        #     self.orm.close()
+        #     return
         if exc_type is None:
             try:
                 self.orm.commit()
             except Exception as e:
                 self.orm.rollback()
                 logger.error("DB Error: %s" % str(e))
+                raise
             finally:
                 self.orm.close()
         else:

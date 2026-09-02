@@ -1,0 +1,7 @@
+.hg
+.git
+__pycache__
+*.pyc
+*.dat
+frontend/node_modules
+frontend/dist

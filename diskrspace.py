@@ -1,30 +1,16 @@
-# -*- coding: utf-8 -*-
-"""
-    start web server
-    ~~~~~~~~~~~~~~~~
-    powered by bottle.py
-
-    :copyright: 20150720 by raptor.zh@gmail.com.
-"""
-import os
+"""Development/standalone entry point for the FastAPI backend."""
 import logging
 
-from bottle import Bottle, run, static_file
+import uvicorn
 
-from config import reload_config
-from db.common import get_fullname
-from web.index import app as index
+from db import Config
+from web.index import app
 
-
-logger = logging.getLogger(__name__)
-
-config = reload_config()
-
-application = Bottle()
-application.mount("{web_path}".format(**config), index)
-
+config = Config.load("web")
+application = app
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG if config['debug'] else logging.INFO)
-    run(application, host=config["web_ip"], port=config["web_port"], debug=config['debug'])
+    logging.basicConfig(level=logging.DEBUG if config["DEBUG"] else logging.INFO)
+    uvicorn.run("web.index:app", host=config["WEB_IP"], port=int(config["WEB_PORT"]),
+                reload=bool(config["DEBUG"]))

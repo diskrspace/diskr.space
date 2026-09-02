@@ -1,13 +1,12 @@
 from setuptools import setup, find_packages
 
-PACKAGE = "diskr.space"
 NAME = "diskr.space"
 DESCRIPTION = "A disk space management tool"
 AUTHOR = "raptor"
 AUTHOR_EMAIL = "raptor.zh@gmail.com"
 URL = "http://diskr.space/"
-VERSION = __import__(PACKAGE).__version__
-REQUIRES = ['bottle', 'sqlalchemy', 'mako', 'beaker', 'bottle-sqlalchemy']
+VERSION = __import__("web").__version__
+REQUIRES = ['fastapi', 'uvicorn', 'sqlalchemy', 'pyyaml', 'python-dotenv']
 
 setup(
     name=NAME,
@@ -17,7 +16,7 @@ setup(
     author_email=AUTHOR_EMAIL,
     license="Apache",
     url=URL,
-    requires=REQUIRES,
+    install_requires=REQUIRES,
     packages=find_packages(),
     zip_safe=False,
 )

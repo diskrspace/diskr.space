@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 def delete_tags(orm, file_id):
-    rs = orm.query(FileTag).filter(FileTag.file_id==file_id).all()
-    return len([orm.delete(t) for t in rs]) > 0
+    orm.query(FileTag).filter(FileTag.file_id==file_id).delete()
+    return
 
 
 def add_tags(orm, file_id, tags):

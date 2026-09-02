@@ -4,11 +4,36 @@
 
     :copyright: 20160110 by raptor.zh@gmail.com.
 """
-from os.path import dirname, abspath, join as joinpath
+from os.path import dirname, abspath, exists, islink, isfile, getsize, join as joinpath
+import datetime
+import decimal
+import hashlib
 import json
+import os
 
 
 unit_map = {"K": 1024, "M": 1048576, "G": 1073741824}
+
+
+MINSIZE = 4096
+BUFSIZE = MINSIZE * 16
+
+
+class JsonEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime.datetime):
+            if obj.utcoffset() is not None:
+                obj = obj - obj.utcoffset()
+            encoded_object = obj.strftime('%Y-%m-%d %H:%M:%S')
+        elif isinstance(obj, datetime.date):
+            encoded_object = obj.strftime('%Y-%m-%d')
+        elif isinstance(obj, datetime.time):
+            encoded_object = obj.strftime('%H:%M:%S')
+        elif isinstance(obj, decimal.Decimal):
+            encoded_object = float(obj)
+        else:
+            encoded_object = json.JSONEncoder.default(self, obj)
+        return encoded_object
 
 
 def expand_size(s):
@@ -38,19 +63,47 @@ def get_fullname(root, *args):
     return joinpath(root, joinpath(*args)) if len(args) > 0 else root
 
 
-def load_config(config_file, config_default):
+def get_filesize(fn):
+    if not exists(fn):
+        return -2
+    if islink(fn):
+        return -1
+    if isfile(fn):
+        return getsize(fn)
+    else:
+        return 0
+
+
+def get_filemd5(fn, qhs=0):
     try:
-        with open(config_file, "r") as f:
-            config = json.loads(f.read())
-        config_default.update(config)
-        config = config_default
-    except IOError:
-        config = config_default
-    return config
+        size = get_filesize(fn)
+        if size < 0:
+            return "-"
+        m = hashlib.md5()
+        m.update(size.to_bytes(max(1, (size.bit_length() + 7) // 8), "big"))
+        with open(fn, "rb") as f:
+            if not qhs or size <= qhs:
+                while True:
+                    block = f.read(BUFSIZE)
+                    if not block:
+                        break
+                    m.update(block)
+            else:
+                block_count = max(1, (qhs + BUFSIZE - 1) // BUFSIZE)
+                for index in range(block_count):
+                    position = int(index * max(size - BUFSIZE, 0) / max(block_count - 1, 1))
+                    f.seek(position)
+                    m.update(f.read(BUFSIZE))
+        return m.hexdigest()
+    except OSError:
+        return "-"
 
 
-def save_config(config_file, config):
-    with open(config_file, "w") as f:
-        f.seek(0)
-        f.truncate(0)
-        f.write(json.dumps(config))
+def check_pid(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        return False
+    return True

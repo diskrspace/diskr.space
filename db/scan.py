@@ -1,227 +1,67 @@
 # -*- coding: utf-8 -*-
-"""
-    Data provider
-    ~~~~~~~~~~~~~~~~
-    for sqlalchemy
-
-    :copyright: 20180615 by raptor.zh@gmail.com.
-"""
+"""Filesystem scanner with short, explicit database transactions."""
 from datetime import datetime
-from multiprocessing import Process
-from traceback import format_exc
+from multiprocessing import Pipe, Process
 import hashlib
-import os
 import logging
+import os
 
-from sqlalchemy import func, or_, and_
-
-from config import reload_config
-from db.common import expand_size
-from db.model import FileInfo, SysInfo
-from db.session import DBSession, SQLResult
-from db.tag import delete_tags, add_tags, update_tags
-
+from db import api as data_api
+from db.common import get_filemd5, get_filesize
+from db.model import FileInfo, engine
+from db.session import DBSession
 
 logger = logging.getLogger(__name__)
-config = reload_config()
+BATCH_SIZE = 256
+WRITE_CHUNK = 64
 
-MINSIZE = 4096
-BUFSIZE = MINSIZE * 16
+
+def _transaction(fn, *args, **kwargs):
+    with DBSession() as db:
+        return fn(db.orm, *args, **kwargs)
 
 
 def set_progress(progress, cur_path, speed):
-    info = {
+    _transaction(data_api.set_progress, {
         "progress": str(int(progress)) if progress is not None else None,
         "cur_path": cur_path,
         "speed": str(int(speed)) if speed is not None else None,
-    }
-    with DBSession() as db:
-        rs = db.orm.query(SysInfo).filter(SysInfo.name.in_(info.keys())).all()
-        for item in rs:
-            value = info.pop(item.name)
-            if value is not None:
-                item.value = value
-        if info:
-            for k, v in info.items():
-                if v is not None:
-                    db.orm.add(SysInfo(name=k, value=v))
+    })
 
 
-def check_pid(pid):
-    if not pid:
-        return False
+def get_filetime(filename):
     try:
-        os.kill(int(pid), 0)
+        return datetime.fromtimestamp(os.path.getmtime(filename))
     except OSError:
-        return False
-    return True
-
-
-def get_filesize(fn):
-    if not os.path.exists(fn):
-        return -2
-    if os.path.islink(fn):
-        return -1
-    if os.path.isfile(fn):
-        return os.path.getsize(fn)
-    else:
-        return 0
-
-
-def get_filetime(fn):
-    if os.path.exists(fn):
-        ftime = os.path.getmtime(fn)
-        return datetime.fromtimestamp(ftime)
-    else:
         return None
-
-
-def get_filemd5(fn):
-    try:
-        size = get_filesize(fn)
-        qhs = expand_size(config['quick_hash_size'])
-        block_count = int((qhs + BUFSIZE / 2) / BUFSIZE
-                          if qhs else size / BUFSIZE)
-        block_size = size * 1.0 / block_count if qhs \
-            else BUFSIZE
-        m = hashlib.md5()
-        with open(fn, "rb") as f:
-            for i in range(block_count):
-                pos = int(i * block_size / MINSIZE) * MINSIZE
-                f.seek(pos, 0)
-                buf = f.read(BUFSIZE)
-                m.update(buf)
-            remaining = size - f.tell()
-            if remaining > 0:
-                if qhs and remaining > BUFSIZE:
-                    f.seek(size - BUFSIZE, 0)
-                    remaining = BUFSIZE
-                buf = f.read(remaining)
-                m.update(buf)
-        return m.hexdigest()
-    except:
-        return "-"
-
-
-def add_file(orm, filerec, pid, ftype, dirname, name, size, ftime, tags, **kwargs):
-    if not ftime:
-        return None
-    if filerec:
-        logger.debug("file_id: %d" % filerec.id)
-        filerec.ftype = ftype
-        filerec.size = size
-        filerec.ftime = ftime
-        filerec.checksum = None
-        filerec.quickhash = None
-        filerec.pid = pid
-        update_tags(orm, filerec.id, tags)
-    else:
-        filerec = FileInfo(ftype=ftype, name=name, dirname=dirname,
-                           size=size, ftime=ftime, pid=pid)
-        orm.add(filerec)
-        orm.flush()
-        orm.refresh(filerec)
-        logger.debug("new file_id: %d(%s%s)" % (filerec.id, dirname + "/" if dirname else "", name))
-        add_tags(orm, filerec.id, tags)
-    return filerec.id
-
-
-def clean_notexists():
-    with DBSession() as db:
-        qry = db.orm.query(FileInfo).filter(FileInfo.pid==None)
-        for r in qry.all():
-            fullname = os.path.join(r.dirname, r.name)
-            size = get_filesize(fullname)
-            if size >= 0:
-                logger.warning("missing %s" % fullname)
-                r.size = size
-                r.checksum = None
-            else:
-                logger.info("not exists: {}".format(fullname))
-                delete_tags(db.orm, r.id)
-                db.orm.delete(r)
-
-def gen_checksum():
-    root = os.path.expanduser(config['work_dir'])
-    quickhash = expand_size(config['quick_hash_size'])
-    with DBSession() as db:
-        sq = db.orm.query(FileInfo.size).filter(FileInfo.ftype=='F', FileInfo.size>0).group_by(
-            FileInfo.size).having(func.count(FileInfo.size) > 1).subquery()
-        qry = db.orm.query(FileInfo).join(sq, FileInfo.size == sq.c.size).filter(FileInfo.pid!=None).filter(
-            or_(FileInfo.checksum==None, and_(FileInfo.quickhash!=0, FileInfo.quickhash!=quickhash)))
-        rs = [{"id": r.id, "realname": os.path.realpath(os.path.join(root, r.dirname, r.name)),
-               "checksum": r.checksum} for r in qry.all()]
-    cs = None
-    for rec in rs:
-        if not cs and rec['checksum']:
-            cs = rec['checksum']
-        checksum = get_filemd5(rec['realname'])
-        with DBSession() as db:
-            r = get_file(db.orm, rec['id'])
-            if checksum == '-':
-                db.orm.delete(r)
-            else:
-                r.checksum = checksum
-                r.quickhash = quickhash if r.size > quickhash else 0
-    return len(rs)
-
-
-def update_dirinfo(orm, dirname):
-    rs = orm.query(FileInfo).filter(FileInfo.dirname==dirname).all()
-    dirsize = 0
-    m = hashlib.md5()
-    for r in rs:
-        if r.ftype == 'D':
-            r.size, r.checksum = update_dirinfo(orm, os.path.join(dirname, r.name))
-            r.quickhash = 0
-        if m and r.size > 0:
-            if r.checksum:
-                m.update(bytes(r.checksum, "ascii"))
-            else:
-                m = None
-        dirsize += r.size
-    return dirsize, m.hexdigest() if m and dirsize > 0 else None
-
-
-def clean_scanner(pid):
-    with DBSession() as db:
-        rs = db.orm.query(FileInfo).filter(FileInfo.pid == pid).all()
-        for r in rs:
-            r.pid = None
-        r = db.orm.query(SysInfo).filter(SysInfo.name=="pid").first()
-        if r:
-            r.value = None
 
 
 def make_fileinfo(fullname, root, linkpath=None):
     relname = os.path.relpath(fullname, root)
-    if relname == '.':
+    if relname == ".":
         relname = ""
     if linkpath:
         relname = linkpath if relname == "" else os.path.join(linkpath, relname)
     dirname, basename = os.path.split(relname)
-    if basename in ('.', ''):
-        logger.error("fullname '%s'" % fullname)
-        raise ValueError
-    tags = dirname.split(os.path.sep)
+    if basename in (".", ""):
+        raise ValueError("invalid path: %s" % fullname)
     name, ext = os.path.splitext(basename)
-    tags.append(name)
-    tags.append(ext)
-    tags.append(os.path.basename(root))
-    tags = [t if not t or t[0] != "." else t[1:] for t in tags]
-    tags = set(tags) - set(["", "..", "."])
+    tags = dirname.split(os.path.sep) + [name, ext, os.path.basename(root)]
+    tags = {tag[1:] if tag.startswith(".") else tag for tag in tags}
+    tags -= {"", "..", "."}
     realname = fullname
     if os.path.islink(fullname):
         realname = os.path.realpath(fullname)
-        if realname.startswith("{}{}".format(root, os.path.sep)):
+        if realname.startswith(root + os.path.sep):
             return None
-    return {"dirname": dirname, "name": basename, "size": get_filesize(realname),
-            "ftime": get_filetime(realname), "tags": list(tags), "realname": realname}
+    return {
+        "dirname": dirname, "name": basename, "size": get_filesize(realname),
+        "ftime": get_filetime(realname), "tags": list(tags), "realname": realname,
+    }
 
 
 def get_elapsed(timer):
-    elapsed = datetime.now() - timer
-    return elapsed.seconds + elapsed.microseconds / 1000000
+    return max((datetime.now() - timer).total_seconds(), 0.001)
 
 
 class ScanBatch:
@@ -234,178 +74,194 @@ class ScanBatch:
         self.subdirs = {}
         self.donedirs = []
 
-    def init_dirs(self, root, rdir, dirs, linkpath=None):
-        # if linkpath, root is realpath
-        if not self.dirs and rdir == root:
+    def init_dirs(self, root, current, dirs, linkpath=None):
+        if not self.dirs and current == root:
             self.dirs = dirs
-        else:
-            dir = os.path.relpath(rdir, root)
-            ds = dir.split(os.path.sep)
-            if len(ds) > 1:
-                dir = None
-            if len(self.subdirs.keys()) < len(self.dirs):
-                if linkpath:
-                    ds = linkpath.split(os.path.sep)
-                    if len(ds) == 1:
-                        dir = linkpath
-                    else:
-                        dir = None
-                if dir and dir in self.dirs and dir not in self.subdirs.keys():
-                    self.subdirs[dir] = dirs
-            if dir is None:
-                if len(ds) == 1:
-                    dir = ds[0]
-                else:
-                    dir = os.path.join(ds[0], ds[1])
-                if dir not in self.donedirs:
-                    self.donedirs.append(dir)
+            return
+        relative = os.path.relpath(current, root)
+        parts = relative.split(os.path.sep)
+        top = linkpath if linkpath and os.path.sep not in linkpath else parts[0]
+        if len(parts) == 1 and top in self.dirs and top not in self.subdirs:
+            self.subdirs[top] = dirs
+        done = top if len(parts) == 1 else os.path.join(parts[0], parts[1])
+        if done not in self.donedirs:
+            self.donedirs.append(done)
 
     def get_progress(self):
-        count = 0
-        for k, v in self.subdirs.items():
-            count += len(v)
-        return len(self.donedirs) * 90 / (len(self.dirs) + count + 1)
+        child_count = sum(len(value) for value in self.subdirs.values())
+        return len(self.donedirs) * 75 / (len(self.dirs) + child_count + 1)
 
     def save_batch(self):
-        count = len(self.batch)
-        with DBSession() as db:
-            for fileinfo in self.batch:
-                try:
-                    _ = str(fileinfo['name']).encode('utf-8')  # test encoding
-                    filerec = db.orm.query(FileInfo).filter(FileInfo.dirname==fileinfo['dirname'],
-                                                            FileInfo.name==fileinfo['name']).first()
-                    if self.force or not filerec:
-                        add_file(db.orm, filerec, pid=self.pid, **fileinfo)
-                except UnicodeEncodeError:
-                    logger.error("Unicode error: {dirname}/{name}".format(**fileinfo))
-                except Exception as e:
-                    logger.error(format_exc())
-                    logger.error("Error : {dirname}/{name} {error}".format(error=str(e), **fileinfo))
-                    break
-        self.batch = []
-        return gen_checksum() + count
+        if not self.batch:
+            return 0
+        pending, self.batch = self.batch, []
+        return _transaction(data_api.save_batch, pending, self.pid, self.force)
 
     def add_file(self, fileinfo):
         self.batch.append(fileinfo)
-        if len(self.batch) >= 1024:
+        if len(self.batch) >= BATCH_SIZE:
             count = self.save_batch()
-            logger.info("Checksum count: {}".format(count - 1024))
-            set_progress(self.get_progress(),
-                         os.path.join(fileinfo['dirname'], fileinfo['name']),
+            set_progress(self.get_progress(), os.path.join(fileinfo["dirname"], fileinfo["name"]),
                          count / get_elapsed(self.timer))
             self.timer = datetime.now()
 
 
 def scan_dir(pid, root, force=False, linkpath=None, batch=None):
-    if not batch:
-        batch = ScanBatch(pid, force)
+    owner = batch is None
+    batch = batch or ScanBatch(pid, force)
     try:
-        for rdir, dirs, files in os.walk(root):
-            batch.init_dirs(root, rdir, dirs, linkpath)
-            if os.path.islink(rdir):
-                logger.warning("link to: %s" % rdir)
+        for current, dirs, files in os.walk(root):
+            batch.init_dirs(root, current, dirs, linkpath)
+            if os.path.islink(current):
                 return
             for name in files:
-                fileinfo = make_fileinfo(os.path.join(rdir, name), root, linkpath)
+                fileinfo = make_fileinfo(os.path.join(current, name), root, linkpath)
                 if fileinfo:
-                    fileinfo['ftype'] = 'F'
+                    fileinfo["ftype"] = "F"
                     batch.add_file(fileinfo)
             for name in dirs:
-                if name == '':
+                if not name:
                     continue
-                fullname = os.path.join(rdir, name)
+                fullname = os.path.join(current, name)
                 fileinfo = make_fileinfo(fullname, root, linkpath)
                 if fileinfo is None:
                     continue
-                fileinfo['ftype'] = 'D'
+                fileinfo["ftype"] = "D"
                 batch.add_file(fileinfo)
                 if not os.path.islink(fullname):
                     continue
-                with DBSession(auto_commit=True) as db:
-                    notexists = db.orm.query(FileInfo.id).filter(FileInfo.dirname==fileinfo['dirname'],
-                                                                 FileInfo.name==fileinfo['name']).first() is None
-                if root.startswith(fileinfo['realname']):
-                    continue  # skip link to ancestor
+                notexists = _transaction(data_api.get_notexists, fileinfo)
+                if root.startswith(fileinfo["realname"]):
+                    continue
                 if force or notexists:
-                    scan_dir(pid, fileinfo['realname'], force,
-                                     os.path.join(fileinfo['dirname'], fileinfo['name']), batch=batch)
+                    scan_dir(pid, fileinfo["realname"], force,
+                             os.path.join(fileinfo["dirname"], fileinfo["name"]), batch)
     finally:
-        batch.save_batch()
+        if owner:
+            batch.save_batch()
 
 
-def get_file(orm, id):
-    return orm.query(FileInfo).filter(FileInfo.id==id).first()
+def generate_checksums(pid, root):
+    """Read files with no open DB transaction, then commit small chunks."""
+    candidates, quickhash = _transaction(data_api.get_checksum_candidates, pid)
+    total, results, timer = len(candidates), [], datetime.now()
+    for index, item in enumerate(candidates, 1):
+        fullname = os.path.realpath(os.path.join(root, item["dirname"], item["name"]))
+        results.append((item["id"], item["size"], get_filemd5(fullname, quickhash)))
+        if len(results) >= WRITE_CHUNK:
+            _transaction(data_api.apply_checksums, results, quickhash)
+            results = []
+        if index % WRITE_CHUNK == 0 or index == total:
+            set_progress(75 + index * 15 / max(total, 1), item["name"], index / get_elapsed(timer))
+    if results:
+        _transaction(data_api.apply_checksums, results, quickhash)
+    return total
 
 
-def scanner(root):
-    speed = 0
-    timer = datetime.now()
-    try:
-        pid = os.getpid()
-        try:
-            with DBSession() as db:
-                sql = """DELETE FROM filetag WHERE file_id NOT IN (SELECT ID FROM fileinfo)"""
-                with SQLResult(db.orm, sql) as res:
-                    if res.rowcount > 0:
-                        logger.info("Delete {} tags.".format(res.rowcount))
-                r = db.orm.query(SysInfo).filter(SysInfo.name=="pid").first()
-                if r:
-                    r.value = str(pid)
-                else:
-                    db.orm.add(SysInfo(name="pid", value=str(pid)))
-                r = db.orm.query(SysInfo).filter(SysInfo.name=='last_scan').first()
-                force = False
-                if r:
-                    force = (datetime.now() - datetime.strptime(r.value, "%Y-%m-%d %H:%M:%S")
-                             ).seconds > int(config['scan_interval'])
-                logger.warning("force: {}".format(force))
-            set_progress(1, "", speed)
-            scan_dir(pid, root, force)
-            with DBSession(auto_commit=True) as db:
-                count = db.orm.query(FileInfo.id).filter(FileInfo.pid!=None).count()
-            speed = int(count / get_elapsed(timer))
-            if force:
-                clean_notexists()
-        finally:
-            logger.info("Updating directories info...")
-            timer = datetime.now()
-            set_progress(90, "", speed)
-            with DBSession() as db:
-                total_size, _ = update_dirinfo(db.orm, "")
-                logger.info("Total size: {}".format(total_size))
-            logger.info("Elapsed time: {}".format((datetime.now() - timer).seconds))
-            clean_scanner(pid)
-    finally:
-        dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with DBSession() as db:
-            r = db.orm.query(SysInfo).filter(SysInfo.name=="last_scan").first()
-            if r:
-                r.value = dt
-            else:
-                db.orm.add(SysInfo(name="last_scan", value=dt))
-        set_progress(100, "", speed)
+def clean_stale_records():
+    stale_ids = _transaction(data_api.get_stale_ids)
+    for offset in range(0, len(stale_ids), WRITE_CHUNK):
+        _transaction(data_api.delete_stale, stale_ids[offset:offset + WRITE_CHUNK])
 
 
-def reset_scanner():
+def _apply_directory_updates(orm, updates):
+    for file_id, size, checksum in updates:
+        orm.query(FileInfo).filter(FileInfo.id == file_id).update(
+            {FileInfo.size: size, FileInfo.checksum: checksum, FileInfo.quickhash: 0},
+            synchronize_session=False)
+
+
+def update_directory_info():
+    """Calculate directory totals from a snapshot and update in short chunks."""
     with DBSession() as db:
-        orm = db.orm
-        r = orm.query(SysInfo).filter(SysInfo.name=="pid").first()
-        if r and check_pid(r.value):
-            return "Scanner {} working, please wait...".format(r.value)
-        pids = orm.query(FileInfo.pid).filter(FileInfo.pid != None).distinct()
-        for p in pids:
-            if check_pid(p.pid):
-                return "Scanner {} working, please wait...".format(p.pid)
-            else:
-                sql = """UPDATE fileinfo SET pid=null WHERE pid = :pid"""
-                with SQLResult(orm, sql, pid=p.pid) as res:
-                    if res.rowcount <= 0:
-                        logger.error("Reset scanner {} fail!".format(p.pid))
-    return None
+        rows = [{"id": r.id, "ftype": r.ftype, "dirname": r.dirname, "name": r.name,
+                 "size": r.size, "checksum": r.checksum} for r in db.orm.query(FileInfo).all()]
+    children = {}
+    for row in rows:
+        children.setdefault(row["dirname"], []).append(row)
+    directories = sorted((row for row in rows if row["ftype"] == "D"),
+                         key=lambda row: os.path.join(row["dirname"], row["name"]).count(os.path.sep),
+                         reverse=True)
+    updates = []
+    for directory in directories:
+        path = os.path.join(directory["dirname"], directory["name"])
+        size, digest, valid = 0, hashlib.md5(), True
+        for child in children.get(path, []):
+            size += child["size"]
+            if child["size"] > 0:
+                if child["checksum"]:
+                    digest.update(child["checksum"].encode("ascii"))
+                else:
+                    valid = False
+        directory["size"] = size
+        directory["checksum"] = digest.hexdigest() if valid and size > 0 else None
+        updates.append((directory["id"], size, directory["checksum"]))
+        if len(updates) >= WRITE_CHUNK:
+            _transaction(_apply_directory_updates, updates)
+            updates = []
+    if updates:
+        _transaction(_apply_directory_updates, updates)
+    return sum(row["size"] for row in children.get("", []))
+
+
+def scanner(root, force=None, reserved=False):
+    engine.dispose(close=False)
+    pid, speed, timer = os.getpid(), 0, datetime.now()
+    registered = reserved
+    succeeded = False
+    try:
+        if not registered:
+            force = _transaction(data_api.set_pid, pid)
+            registered = True
+        _transaction(data_api.clear_tags)
+        set_progress(0, "", 0)
+        logger.info("Start scan: %s", root)
+        scan_dir(pid, root, force)
+        generate_checksums(pid, root)
+        count = _transaction(data_api.get_scanned_count)
+        speed = int(count / get_elapsed(timer))
+        if force:
+            clean_stale_records()
+        set_progress(90, "", speed)
+        update_directory_info()
+        succeeded = True
+    except Exception:
+        logger.exception("Scanner failed")
+        if registered:
+            set_progress(100, "扫描失败，请查看服务端日志", 0)
+        raise
+    finally:
+        if registered:
+            _transaction(data_api.clean_scanner, pid)
+            if succeeded:
+                _transaction(data_api.update_last_scan, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                set_progress(100, "", speed)
+
+
+def _run_reserved_scanner(root, receiver):
+    try:
+        force = receiver.recv()
+    finally:
+        receiver.close()
+    scanner(root, force=force, reserved=True)
 
 
 def spawn_scanner(root):
-    set_progress(0, "", 0)
-    p = Process(target=scanner, args=(os.path.expanduser(root),))
-    p.start()
+    receiver, sender = Pipe(duplex=False)
+    process = Process(target=_run_reserved_scanner,
+                      args=(os.path.expanduser(root), receiver), daemon=True)
+    process.start()
+    receiver.close()
+    try:
+        # Reserve the scanner row and commit before allowing the child to touch
+        # the filesystem. This closes the double-click/multi-worker race.
+        force = _transaction(data_api.set_pid, process.pid)
+        sender.send(force)
+    except Exception:
+        process.terminate()
+        process.join(timeout=2)
+        raise
+    finally:
+        sender.close()
+    logger.info("Scanner %s started", process.pid)
     return "Start scanning..."

@@ -9,18 +9,36 @@
 import os
 import logging
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import ForeignKey, Column, Index, Integer, BigInteger, String, Unicode, UnicodeText, DateTime
-# from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine, event, \
+    ForeignKey, Column, Index, Integer, BigInteger, String, Unicode, UnicodeText, DateTime
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-from config import reload_config, expanduser
+from db import Config
 
 
 logger = logging.getLogger(__name__)
 
-config = reload_config()
-engine = engine_from_config({"sqlalchemy.url": "sqlite:///{}".format(expanduser(config['dbpath']))})
+config = Config.load("web")
+
+sqlite = "sqlite:///"
+if config['DB_URI'].startswith(f"{sqlite}~"):
+    config['DB_URI'] = f"{sqlite}{os.path.expanduser(config['DB_URI'][len(sqlite):])}"
+
+engine_options = {"pool_pre_ping": True, "future": True}
+if config['DB_URI'].startswith("sqlite:"):
+    engine_options["connect_args"] = {"check_same_thread": False}
+engine = create_engine(config['DB_URI'], **engine_options)
+
+if config['DB_URI'].startswith("sqlite:"):
+    @event.listens_for(engine, "connect")
+    def configure_sqlite(connection, _record):
+        # SQLite remains single-writer, but WAL lets the UI read the previous
+        # committed snapshot while a scan batch is writing.
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 Base = declarative_base()
 
@@ -55,11 +73,21 @@ class SysInfo(Base):
     __tablename__ = "sysinfo"
 
     name = Column(String(50), primary_key=True)  # e.g. progress, cur_path, speed, last_scan
-    value = Column(String(50))
+    value = Column(String(1000))
 
 
 metadata = Base.metadata
 
+create_session = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
-if not os.path.exists(expanduser(config['dbpath'])):
-    metadata.create_all(engine)
+metadata.create_all(engine)
+
+
+def initialize_settings():
+    with create_session.begin() as session:
+        for name, value in Config.DEFAULTS.items():
+            if session.get(SysInfo, name) is None:
+                session.add(SysInfo(name=name, value=value))
+
+
+initialize_settings()

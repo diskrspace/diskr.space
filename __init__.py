@@ -1,0 +1,1 @@
+from web import __version__

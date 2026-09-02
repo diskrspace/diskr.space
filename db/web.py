@@ -14,6 +14,7 @@ from sqlalchemy.orm import aliased
 
 from db.common import format_size
 from db.model import FileInfo, FileTag, SysInfo
+from db import Config
 from db.session import SQLResult, DBSession
 from db.tag import delete_tags
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_sysinfo(key):
-    with DBSession(auto_commit=True) as db:
+    with DBSession() as db:
         res = db.orm.query(SysInfo.value).filter(SysInfo.name==key).first()
         return res.value if res else None
 
@@ -37,6 +38,20 @@ def set_sysinfo(key, value):
             db.orm.add(res)
             db.orm.flush()
             # db.orm.refresh(res)
+
+
+def get_setting(orm, key):
+    """Read a database-backed setting, falling back to its built-in default."""
+    row = orm.query(SysInfo.value).filter(SysInfo.name == key).first()
+    return row.value if row else Config.DEFAULTS.get(key)
+
+
+def set_setting(orm, key, value):
+    row = orm.query(SysInfo).filter(SysInfo.name == key).first()
+    if row:
+        row.value = str(value)
+    else:
+        orm.add(SysInfo(name=key, value=str(value)))
 
 
 def get_status(orm):
@@ -56,14 +71,12 @@ def get_status(orm):
     return info
 
 
-def get_progress():
-    with DBSession(auto_commit=True) as db:
-        orm = db.orm
+def get_progress(orm=None):
+    if orm is not None:
         qry = orm.query(SysInfo).filter(SysInfo.name.in_(["progress", "cur_path", "speed"]))
-        prog = {item.name: item.value for item in qry.all()}
-        #info = get_status(db.orm)
-    #prog['info'] = info
-    return prog
+        return {item.name: item.value for item in qry.all()}
+    with DBSession() as db:
+        return get_progress(db.orm)
 
 
 def format_rec(r):
@@ -74,7 +87,7 @@ def format_rec(r):
         "ftype": r.ftype,
         "fhash": "{}|{}".format(r.checksum, r.quickhash),
         "size": format_size(r.size),
-        "ftime": r.ftime.strftime("%Y-%m-%d %H:%M:%S")
+        "ftime": r.ftime.strftime("%Y-%m-%d %H:%M:%S") if r.ftime else None
     }
 
 
@@ -82,23 +95,25 @@ def get_search(orm, tags, page=0, count=50):
     qry = orm.query(FileInfo)
     for t in tags:
         ft = aliased(FileTag)
-        qry = qry.join((ft, FileInfo.id==ft.file_id)).filter(ft.tag==t)
+        qry = qry.join(ft, FileInfo.id == ft.file_id).filter(ft.tag == t)
     page = page if page > 0 else 0
     count = count if count > 0 and count < 100 else 100
-    return [format_rec(r) for r in qry.order_by(FileInfo.dirname).all()[page * count:(page + 1) * count]]
+    records = qry.order_by(FileInfo.dirname, FileInfo.name).offset(page * count).limit(count).all()
+    return [format_rec(r) for r in records]
 
 
-def get_duplist(orm, since_size=0, count=50):
+def get_duplist(orm, since_size=0, count=50, only_dirs=False):
     since_size = since_size if since_size > 0 else 0
-    sq = orm.query(FileInfo.checksum, FileInfo.quickhash).filter(FileInfo.checksum!=None,
-                                                                 FileInfo.checksum!='-').group_by(
-        FileInfo.checksum).having(func.count(FileInfo.checksum)>1).subquery()
-    qry = orm.query(FileInfo).join(sq, and_(FileInfo.checksum==sq.c.checksum,
-                                           FileInfo.quickhash==sq.c.quickhash)
-                                  )
+    sq = orm.query(FileInfo.checksum, FileInfo.quickhash).filter(
+        FileInfo.checksum!=None, FileInfo.checksum!='-').group_by(FileInfo.checksum, FileInfo.quickhash, FileInfo.size).having(
+        func.count()>1).subquery()
+    qry = orm.query(FileInfo).join(sq, and_(
+        FileInfo.checksum==sq.c.checksum, FileInfo.quickhash==sq.c.quickhash))
     if since_size > 0:
         qry = qry.filter(FileInfo.size<=since_size)
-    qry = qry.order_by(FileInfo.size.desc())
+    if only_dirs:
+        qry = qry.filter(FileInfo.ftype=='D')
+    qry = qry.order_by(FileInfo.size.desc(), FileInfo.checksum, FileInfo.dirname)
     res = []
     dirs = []
     count = count if count > 0 and count < 100 else 100
