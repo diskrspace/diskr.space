@@ -1,6 +1,7 @@
 """FastAPI application for the separated Diskr.space frontend."""
 import logging
 import os
+import signal
 import shutil
 from pathlib import Path
 from typing import Generator
@@ -17,6 +18,11 @@ from db.model import FileInfo, create_session
 from web import __version__
 
 logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=os.environ.get("DISKRSPACE_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 config = Config.load("web")
 
 
@@ -90,17 +96,51 @@ def get_scan_progress(db: Session = Depends(get_db)):
     return progress
 
 
+@router.post("/scan/stop")
+def stop_scan(db: Session = Depends(get_db)):
+    pid = scan_api.get_scanner_pid(db)
+    if not pid:
+        return {"status": "idle"}
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="无法中断扫描进程") from exc
+    scan_api.cancel_scanner(db, pid)
+    return {"status": "stopped"}
+
+
 @router.get("/files/search")
 def search_files(tags: str = Query(min_length=1), page: int = Query(0, ge=0),
                  db: Session = Depends(get_db)):
     tag_list = [tag.strip() for tag in tags.replace(" ", ",").split(",") if tag.strip()]
-    return {"items": web.get_search(db, tag_list[:8], page), "page": page}
+    tag_list = tag_list[:8]
+    page_size = 50
+    return {
+        "items": web.get_search(db, tag_list, page, page_size),
+        "page": page,
+        "page_size": page_size,
+        "total": web.get_search_count(db, tag_list),
+    }
 
 
 @router.get("/duplicates")
 def get_duplicates(since_size: int = Query(0, ge=0), only_dirs: bool = False,
-                   db: Session = Depends(get_db)):
-    return {"items": web.get_duplist(db, since_size, only_dirs=only_dirs)}
+                   db: Session = Depends(get_db), page: int = Query(0, ge=0),
+                   page_size: int = Query(50, ge=50, le=200)):
+    if not isinstance(page, int):  # direct callers/tests use the dependency as the third argument
+        page = 0
+    if page_size not in (50, 200):
+        page_size = 50
+    scanning = bool(scan_api.get_scanner_pid(db))
+    return {
+        "items": web.get_duplist(db, since_size, count=page_size, only_dirs=only_dirs, page=page),
+        "page": page,
+        "page_size": page_size,
+        "total": web.get_duplist_count(db, since_size, only_dirs),
+        "scanning": scanning,
+    }
 
 
 def _remove_file_or_dir(db: Session, file_id: int):
@@ -139,7 +179,11 @@ def _remove_file_or_dir(db: Session, file_id: int):
 
 @router.delete("/duplicates/{file_id}")
 def delete_duplicate(file_id: int, db: Session = Depends(get_db)):
-    return {"status": "ok", "name": _remove_file_or_dir(db, file_id)}
+    try:
+        return {"status": "ok", "name": _remove_file_or_dir(db, file_id)}
+    except HTTPException as exc:
+        logger.error("Delete duplicate %s failed: %s", file_id, exc.detail)
+        raise
 
 
 @router.get("/settings")
@@ -154,12 +198,15 @@ def get_settings(db: Session = Depends(get_db)):
 @router.put("/settings")
 def put_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
     previous = web.get_setting(db, "work_dir") or ""
-    if previous != settings.work_dir and not settings.confirm:
-        return {"confirm": "required"}
-    if not settings.work_dir.strip():
+    work_dir = settings.work_dir.strip()
+    if not work_dir:
         raise HTTPException(status_code=422, detail="扫描目录不能为空")
-    web.set_setting(db, "work_dir", settings.work_dir)
-    if previous != settings.work_dir:
+    if not os.path.isdir(os.path.expanduser(work_dir)):
+        raise HTTPException(status_code=422, detail="扫描目录不存在或不是目录")
+    if previous != work_dir and not settings.confirm:
+        return {"confirm": "required"}
+    web.set_setting(db, "work_dir", work_dir)
+    if previous != work_dir:
         # The next scan must mark every entry so records from the old root are
         # removed only after the new root has been indexed successfully.
         web.set_setting(db, "last_scan", "1970-01-01 00:00:00")

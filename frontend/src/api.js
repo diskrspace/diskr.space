@@ -16,9 +16,10 @@ export const api = {
   status: () => request('/status'),
   progress: () => request('/scan/progress'),
   startScan: () => request('/scan', { method: 'POST' }),
+  stopScan: () => request('/scan/stop', { method: 'POST' }),
   search: (tags, page = 0) => request(`/files/search?${new URLSearchParams({ tags, page })}`),
-  duplicates: (sinceSize = 0, onlyDirs = false) =>
-    request(`/duplicates?${new URLSearchParams({ since_size: sinceSize, only_dirs: onlyDirs })}`),
+  duplicates: (sinceSize = 0, onlyDirs = false, page = 0, pageSize = 50) =>
+    request(`/duplicates?${new URLSearchParams({ since_size: sinceSize, only_dirs: onlyDirs, page, page_size: pageSize })}`),
   deleteDuplicate: id => request(`/duplicates/${id}`, { method: 'DELETE' }),
   settings: () => request('/settings'),
   saveSettings: value => request('/settings', { method: 'PUT', body: JSON.stringify(value) })

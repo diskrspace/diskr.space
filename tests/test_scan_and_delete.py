@@ -27,6 +27,8 @@ def test_scan_tags_search_and_duplicates(tmp_path):
         assert status["work_dir"] == str(root)
         search = search_files("jpg", 0, session)
         assert {item["name"] for item in search["items"]} == {"photo-a.jpg", "photo-b.jpg"}
+        by_name = search_files("photo-a", 0, session)
+        assert {item["name"] for item in by_name["items"]} == {"photo-a.jpg"}
         assert len(get_duplicates(0, False, session)["items"]) == 2
 
 

@@ -12,7 +12,7 @@ import json
 import os
 
 
-unit_map = {"K": 1024, "M": 1048576, "G": 1073741824}
+unit_map = {"K": 1024, "M": 1048576, "G": 1073741824, "T": 1099511627776}
 
 
 MINSIZE = 4096
@@ -49,7 +49,7 @@ def expand_size(s):
 def format_size(s):
     if not s:
         return 0
-    for unit in ['G', 'M', 'K']:
+    for unit in ['T', 'G', 'M', 'K']:
         if s >= unit_map[unit]:
             return "%0.2f%s(%s)" % (s / unit_map[unit], unit, s)
     return s

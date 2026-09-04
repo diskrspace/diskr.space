@@ -176,6 +176,21 @@ def clean_scanner(orm, pid):
         r.value = None
 
 
+def get_scanner_pid(orm):
+    row = orm.query(SysInfo.value).filter(SysInfo.name == "pid").first()
+    return row.value if row and row.value else None
+
+
+def cancel_scanner(orm, pid):
+    """Release records left by a scanner that was intentionally stopped."""
+    orm.query(FileInfo).filter(FileInfo.pid == pid).update(
+        {FileInfo.pid: None}, synchronize_session=False)
+    r = orm.query(SysInfo).filter(SysInfo.name == "pid", SysInfo.value == str(pid)).first()
+    if r:
+        r.value = None
+    set_progress(orm, {"progress": "100", "cur_path": "扫描已中断", "speed": "0"})
+
+
 def update_last_scan(orm, last_scan):
     r = orm.query(SysInfo).filter(SysInfo.name == "last_scan").first()
     if r:

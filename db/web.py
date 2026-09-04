@@ -9,10 +9,10 @@
 import os
 import logging
 
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, or_
 from sqlalchemy.orm import aliased
 
-from db.common import format_size
+from db.common import check_pid, format_size
 from db.model import FileInfo, FileTag, SysInfo
 from db import Config
 from db.session import SQLResult, DBSession
@@ -55,16 +55,19 @@ def set_setting(orm, key, value):
 
 
 def get_status(orm):
-    sql = """SELECT COUNT(id) AS files, SUM(size) AS size
-        FROM fileinfo WHERE ftype='F'
+    scanner_pid = orm.query(SysInfo.value).filter(SysInfo.name == "pid").scalar()
+    scanning = bool(scanner_pid and check_pid(scanner_pid))
+    current_scan_filter = " AND pid IS NOT NULL" if scanning else ""
+    sql = f"""SELECT COUNT(id) AS files, SUM(size) AS size
+        FROM fileinfo WHERE ftype='F'{current_scan_filter}
     """
     with SQLResult(orm, sql) as res:
         info = res.first()
-    sql = """SELECT COUNT(id) AS dirs FROM fileinfo WHERE ftype='D'"""
+    sql = f"""SELECT COUNT(id) AS dirs FROM fileinfo WHERE ftype='D'{current_scan_filter}"""
     with SQLResult(orm, sql) as res:
         info['dirs'] = res.first()['dirs']
     r = orm.query(SysInfo).filter(SysInfo.name=="last_scan").first()
-    if r:
+    if r and not r.value.startswith("1970-01-01"):
         info['updated'] = r.value
     else:
         info['updated'] = ""
@@ -91,18 +94,35 @@ def format_rec(r):
     }
 
 
-def get_search(orm, tags, page=0, count=50):
+def _search_query(orm, tags):
     qry = orm.query(FileInfo)
     for t in tags:
+        pattern = "%{}%".format(t)
         ft = aliased(FileTag)
-        qry = qry.join(ft, FileInfo.id == ft.file_id).filter(ft.tag == t)
+        tag_match = orm.query(ft.file_id).filter(
+            ft.file_id == FileInfo.id, ft.tag.ilike(pattern)
+        ).exists()
+        qry = qry.filter(or_(
+            FileInfo.name.ilike(pattern),
+            FileInfo.dirname.ilike(pattern),
+            tag_match,
+        ))
+    return qry
+
+
+def get_search_count(orm, tags):
+    return _search_query(orm, tags).count()
+
+
+def get_search(orm, tags, page=0, count=50):
+    qry = _search_query(orm, tags)
     page = page if page > 0 else 0
     count = count if count > 0 and count < 100 else 100
     records = qry.order_by(FileInfo.dirname, FileInfo.name).offset(page * count).limit(count).all()
     return [format_rec(r) for r in records]
 
 
-def get_duplist(orm, since_size=0, count=50, only_dirs=False):
+def get_duplist(orm, since_size=0, count=50, only_dirs=False, page=0):
     since_size = since_size if since_size > 0 else 0
     sq = orm.query(FileInfo.checksum, FileInfo.quickhash).filter(
         FileInfo.checksum!=None, FileInfo.checksum!='-').group_by(FileInfo.checksum, FileInfo.quickhash, FileInfo.size).having(
@@ -113,27 +133,62 @@ def get_duplist(orm, since_size=0, count=50, only_dirs=False):
         qry = qry.filter(FileInfo.size<=since_size)
     if only_dirs:
         qry = qry.filter(FileInfo.ftype=='D')
-    qry = qry.order_by(FileInfo.size.desc(), FileInfo.checksum, FileInfo.dirname)
+    # Keep duplicate groups together, ordering larger groups first; within a
+    # group, show shorter paths first.
+    qry = qry.order_by(
+        FileInfo.size.desc(), FileInfo.checksum, FileInfo.quickhash,
+        func.length(FileInfo.dirname) + func.length(FileInfo.name),
+        FileInfo.dirname, FileInfo.name,
+    )
     res = []
     dirs = []
-    count = count if count > 0 and count < 100 else 100
-    index = 0
-    while True:
-        if index > qry.count():
-            break
-        for r in qry.all()[index:index + count]:
-            if r.ftype == 'D':
-                d = os.path.join(r.dirname, r.name)
-                if d not in dirs:
-                    dirs.append(d)
-            rec = format_rec(r)
-            if rec['parent'] not in dirs:
-                res.append(rec)
-        if len(res) < count:
-            index += count
-        else:
-            break
+    count = count if count > 0 and count <= 200 else 50
+    offset = max(page, 0) * count
+    rows = qry.offset(offset).limit(count).all()
+    if len(rows) == count:
+        last = rows[-1]
+        next_row = qry.offset(offset + count).first()
+        last_key = (last.checksum, last.quickhash, last.size)
+        if next_row and (next_row.checksum, next_row.quickhash, next_row.size) == last_key:
+            group_total = qry.filter(
+                FileInfo.checksum == last.checksum,
+                FileInfo.quickhash == last.quickhash,
+                FileInfo.size == last.size,
+            ).count()
+            # Do not expose a partial small group at a page boundary. Large
+            # groups are allowed to span pages so they remain usable.
+            if group_total <= 10:
+                rows = [r for r in rows if (r.checksum, r.quickhash, r.size) != last_key]
+    for r in rows:
+        if r.ftype == 'D':
+            d = os.path.join(r.dirname, r.name)
+            if only_dirs:
+                # If an ancestor directory is already represented, its
+                # descendants add no useful information and are omitted.
+                if any(d == parent or d.startswith(parent + os.path.sep) for parent in dirs):
+                    continue
+                dirs[:] = [parent for parent in dirs if not parent.startswith(d + os.path.sep)]
+                res[:] = [item for item in res if not item['name'].startswith(d + os.path.sep)]
+            if d not in dirs:
+                dirs.append(d)
+        rec = format_rec(r)
+        if rec['parent'] not in dirs:
+            res.append(rec)
     return res
+
+
+def get_duplist_count(orm, since_size=0, only_dirs=False):
+    since_size = since_size if since_size > 0 else 0
+    sq = orm.query(FileInfo.checksum, FileInfo.quickhash).filter(
+        FileInfo.checksum != None, FileInfo.checksum != '-').group_by(
+            FileInfo.checksum, FileInfo.quickhash, FileInfo.size).having(func.count() > 1).subquery()
+    qry = orm.query(FileInfo).join(sq, and_(
+        FileInfo.checksum == sq.c.checksum, FileInfo.quickhash == sq.c.quickhash))
+    if since_size > 0:
+        qry = qry.filter(FileInfo.size <= since_size)
+    if only_dirs:
+        qry = qry.filter(FileInfo.ftype == 'D')
+    return qry.count()
 
 
 
@@ -153,13 +208,17 @@ def remove_filedir_info(orm, rec):
 
 def remove_all_filedir(orm, rec):
     name = os.path.join(rec.dirname, rec.name)
-    rs = orm.query(FileInfo).filter(FileInfo.dirname == name).all()
-    for r in rs:
-        remove_filedir_info(orm, r)
-    rs = orm.query(FileInfo).filter(FileInfo.dirname.like("{}{}%".format(name, os.path.sep))).all()
-    for r in rs:
-        remove_filedir_info(orm, r)
-    remove_filedir_info(orm, rec)
+    records = orm.query(FileInfo).filter(
+        or_(FileInfo.id == rec.id,
+            FileInfo.dirname == name,
+            FileInfo.dirname.like("{}{}%".format(name, os.path.sep)))
+    ).all()
+    # A duplicate directory can be encountered more than once while cleaning
+    # a hash group. Deduplicate IDs and skip rows already deleted in this
+    # transaction to avoid SQLAlchemy confirm_deleted_rows warnings.
+    for item in {item.id: item for item in records}.values():
+        if orm.get(FileInfo, item.id) is not None:
+            remove_filedir_info(orm, item)
     return name
 
 

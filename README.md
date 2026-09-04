@@ -16,7 +16,7 @@ Diskr.space 是一个硬盘文件管理工具：扫描指定目录，将文件�
 下载最新的 `diskr.space-版本号.zip` 并解压。发布包已经包含后端程序和编译好的前端页面，用户不需要安装 Node.js。
 
 ```bash
-cd diskr.space-3.0.0
+cd diskr.space-3.0.1
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
@@ -76,4 +76,4 @@ python scripts/build_release.py --skip-frontend-install
 
 ## 反馈与技术说明
 
-当前版本为 `3.0.0`。API 文档位于后端启动后的 `/docs`；项目技术说明见 [docs/introduction.md](docs/introduction.md)。
+当前版本为 `3.0.1`。API 文档位于后端启动后的 `/docs`；项目技术说明见 [docs/introduction.md](docs/introduction.md)。
