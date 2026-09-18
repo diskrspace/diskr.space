@@ -140,7 +140,7 @@ def delete_stale(orm, ids):
 
 
 def clear_tags(orm):
-    sql = """DELETE FROM filetag WHERE file_id NOT IN (SELECT ID FROM fileinfo)"""
+    sql = """DELETE FROM filetag WHERE file_id NOT EXISTS (SELECT ID FROM fileinfo)"""
     with SQLResult(orm, sql) as res:
         if res.rowcount > 0:
             logger.info("Delete {} tags.".format(res.rowcount))
